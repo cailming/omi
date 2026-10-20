@@ -5,7 +5,6 @@
 #include "driver/i2s_pdm.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
 #include "omiglass_config.h"
 
 namespace {
@@ -186,7 +185,7 @@ void mic_service_process()
         s_read_buffer,
         requested_bytes,
         &bytes_read,
-        pdMS_TO_TICKS(OMI_MIC_READ_TIMEOUT_MS));
+        OMI_MIC_READ_TIMEOUT_MS);
 
     // 20ms 内没有拿到数据并不代表设备故障，下一轮继续读取即可。
     if (err == ESP_ERR_TIMEOUT) {
