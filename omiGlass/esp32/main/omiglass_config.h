@@ -36,13 +36,21 @@ constexpr uint32_t OMI_BOOT_BLINK_HALF_PERIOD_MS = 150;
 constexpr uint32_t OMI_DISCONNECTED_BLINK_PERIOD_MS = 1000;
 
 // =============================================================================
-// 后续阶段仍会复用的硬件参数
-// 这里只先迁移常量，不在 Phase 1 初始化对应外设。
+// 麦克风配置
+// XIAO ESP32S3 Sense 板载麦克风为 PDM 麦克风。
 // =============================================================================
 constexpr gpio_num_t OMI_MIC_CLK_GPIO = GPIO_NUM_42;
 constexpr gpio_num_t OMI_MIC_DATA_GPIO = GPIO_NUM_41;
 constexpr uint32_t OMI_MIC_SAMPLE_RATE = 16000;
+constexpr size_t OMI_MIC_BUFFER_SAMPLES = 1600; // 100ms PCM 数据
+constexpr int OMI_MIC_GAIN = 2;
+constexpr uint32_t OMI_MIC_READ_TIMEOUT_MS = 20;
+constexpr uint32_t OMI_MIC_DMA_DESC_NUM = 8;
+constexpr uint32_t OMI_MIC_DMA_FRAME_NUM = 256;
 
+// =============================================================================
+// 后续阶段会继续使用的硬件参数
+// =============================================================================
 constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
 
 // Camera GPIO 映射来自原 Arduino 固件。
