@@ -42,9 +42,10 @@ constexpr uint32_t OMI_DISCONNECTED_BLINK_PERIOD_MS = 1000;
 constexpr gpio_num_t OMI_MIC_CLK_GPIO = GPIO_NUM_42;
 constexpr gpio_num_t OMI_MIC_DATA_GPIO = GPIO_NUM_41;
 constexpr uint32_t OMI_MIC_SAMPLE_RATE = 16000;
-constexpr size_t OMI_MIC_BUFFER_SAMPLES = 1600; // 100ms PCM 数据
+constexpr size_t OMI_MIC_BUFFER_SAMPLES = 1600; // 总读取缓冲区容量：100ms PCM
+constexpr size_t OMI_MIC_READ_SAMPLES = 320;    // 单次读取：20ms，正好对应一帧 Opus
 constexpr int OMI_MIC_GAIN = 2;
-constexpr uint32_t OMI_MIC_READ_TIMEOUT_MS = 20;
+constexpr uint32_t OMI_MIC_READ_TIMEOUT_MS = 30;
 constexpr uint32_t OMI_MIC_DMA_DESC_NUM = 8;
 constexpr uint32_t OMI_MIC_DMA_FRAME_NUM = 256;
 
