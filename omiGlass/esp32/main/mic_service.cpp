@@ -178,7 +178,7 @@ void mic_service_process()
     }
 
     size_t bytes_read = 0;
-    const size_t requested_bytes = OMI_MIC_BUFFER_SAMPLES * sizeof(int16_t);
+    const size_t requested_bytes = OMI_MIC_READ_SAMPLES * sizeof(int16_t);
 
     const esp_err_t err = i2s_channel_read(
         s_rx_handle,
@@ -187,7 +187,7 @@ void mic_service_process()
         &bytes_read,
         OMI_MIC_READ_TIMEOUT_MS);
 
-    // 20ms 内没有拿到数据并不代表设备故障，下一轮继续读取即可。
+    // 超时并不代表设备故障，下一轮继续读取即可。
     if (err == ESP_ERR_TIMEOUT) {
         return;
     }
