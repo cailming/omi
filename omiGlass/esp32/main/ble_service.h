@@ -4,6 +4,7 @@
 
 #include "board_service.h"
 #include "esp_err.h"
+#include "host/ble_att.h"
 
 // 初始化 NimBLE、注册 Omi GATT 服务并开始广播。
 // Phase 4 只负责 BLE Core / GATT 结构，不发送实时音频。
