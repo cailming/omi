@@ -3,6 +3,7 @@ idf_component_register(
         "app_main.cpp"
         "board_service.cpp"
         "mic_service.cpp"
+        "opus_service.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
