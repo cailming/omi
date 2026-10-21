@@ -66,6 +66,24 @@ constexpr size_t OMI_AUDIO_RING_BUFFER_SAMPLES = 8000;  // 500ms PCM 缓冲
 static_assert(OMI_OPUS_FRAME_SAMPLES == 320, "Omi 当前协议要求 20ms / 320 samples Opus 帧");
 
 // =============================================================================
+// BLE 配置
+// 与原 Arduino 固件保持相同的 MTU、广播间隔和连接参数。
+// =============================================================================
+constexpr uint16_t OMI_BLE_MTU_SIZE = 517;
+
+// 广播间隔单位为 0.625ms：0x0140=200ms，0x0280=400ms。
+constexpr uint16_t OMI_BLE_ADV_MIN_INTERVAL = 0x0140;
+constexpr uint16_t OMI_BLE_ADV_MAX_INTERVAL = 0x0280;
+
+// 连接间隔单位为 1.25ms：20=25ms，40=50ms。
+constexpr uint16_t OMI_BLE_CONN_MIN_INTERVAL = 20;
+constexpr uint16_t OMI_BLE_CONN_MAX_INTERVAL = 40;
+constexpr uint16_t OMI_BLE_CONN_LATENCY = 0;
+
+// Supervision timeout 单位为 10ms：800=8 秒。
+constexpr uint16_t OMI_BLE_CONN_TIMEOUT = 800;
+
+// =============================================================================
 // 后续阶段会继续使用的硬件参数
 // =============================================================================
 constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
