@@ -1,0 +1,10 @@
+# ESP-IDF 组件依赖清单
+# 本迁移分支固定使用 ESP-IDF 6.1.x，避免后续 API 漂移。
+targets:
+  - esp32s3
+
+dependencies:
+  idf:
+    version: ">=6.1,<6.2"
+  78/esp-opus:
+    version: "1.0.5"
