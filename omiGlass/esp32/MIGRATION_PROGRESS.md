@@ -15,11 +15,11 @@
 
 ## 总体状态
 
-- Phase 0：代码完成，待本地 `idf.py build` / 真机验证
-- Phase 1：代码完成，待本地编译与 GPIO/LED/Button 验证
+- Phase 0：代码完成，待 CI / 真机验证
+- Phase 1：代码完成，待 GPIO/LED/Button 真机验证
 - Phase 2：代码完成，待 PDM Mic 真机验证
 - Phase 3：代码完成，待 ESP-IDF v6.1 + Opus 编译/真机验证
-- Phase 4：**代码迁移完成，待 ESP-IDF v6.1 编译与手机 GATT 验证**
+- Phase 4：**代码迁移完成，待 CI 编译与手机 GATT 验证**
 - Phase 5：未开始
 - Phase 6：未开始
 - Phase 7：未开始
@@ -133,7 +133,8 @@ Phase 3 仍然不发送 BLE。
 
 - `main/ble_service.h`
 - `main/ble_service.cpp`
-- `PHASE4_BLE.md`
+- `PHASE4_BLE_CORE.md`
+- `.github/workflows/omiglass-esp-idf.yml`
 
 CMake 已加入：
 
@@ -149,6 +150,12 @@ CMake 已加入：
 - GAP Service
 - 最大连接数 1
 - Preferred ATT MTU 517
+
+并关闭当前眼镜固件不需要的：
+
+- Central role
+- Observer role
+- GATT Client
 
 ### 已迁移的 BLE Core
 
@@ -188,6 +195,14 @@ CMake 已加入：
 - Firmware Revision
 - Hardware Revision
 - Serial Number
+
+设备序列号由 `app_main()` 调用 `board_device_serial()` 后传给：
+
+```cpp
+ble_service_init(board_device_serial());
+```
+
+这样 BLE 层不反向依赖板级序列号生成逻辑。
 
 #### OTA Service
 
@@ -266,7 +281,39 @@ Audio Data Notify
 11. BLE 连接状态能驱动 LED 状态
 12. Mic / Opus 保持运行，但无实时 Audio notify 流量
 
-详细内容见：`PHASE4_BLE.md`
+详细内容见：`PHASE4_BLE_CORE.md`
+
+---
+
+## GitHub Actions 编译验证
+
+新增：
+
+```text
+.github/workflows/omiglass-esp-idf.yml
+```
+
+固定使用：
+
+```text
+espressif/idf:v6.1
+```
+
+自动执行：
+
+```bash
+cd omiGlass/esp32
+idf.py set-target esp32s3
+idf.py build
+```
+
+触发条件：
+
+- 向 `feature/omiglass-esp-idf-migration` push 且修改 `omiGlass/esp32/**`
+- Pull Request 修改 `omiGlass/esp32/**`
+- 手动 `workflow_dispatch`
+
+这使后续迁移可以在 GitHub 上做真实 ESP-IDF v6.1 编译验证，而不再只依赖静态检查。
 
 ---
 
@@ -277,7 +324,7 @@ app_main()
    │
    ├── board_service_init()
    │
-   ├── ble_service_init()
+   ├── ble_service_init(board_device_serial())
    │      └── NimBLE Host Task
    │
    ├── opus_service_init()
@@ -297,17 +344,28 @@ app_main()
 
 ## 当前验证边界
 
-当前聊天模式能够通过 GitHub 直接读写仓库，但没有连接实际 ESP-IDF v6.1 编译环境或 XIAO ESP32S3 真机。
+当前聊天模式已经能够：
+
+- 通过 GitHub 读取原 Arduino 固件
+- 创建迁移分支
+- 逐文件提交 ESP-IDF 代码
+- 写迁移文档和进度
+- 创建 GitHub Actions ESP-IDF v6.1 编译工作流
+
+当前仍不能直接完成：
+
+- XIAO ESP32S3 真机烧录
+- 手机实际连接 GATT
+- 麦克风真实波形验证
+- BLE 射频/吞吐/长期稳定性验证
 
 因此目前只声明：
 
 > **Phase 0~4 代码迁移已完成。**
 
-尚不能声明：
+GitHub Actions 构建结果和真机结果需要分别记录后，才能标记“编译通过”和“硬件验证通过”。
 
-> 已通过 `idf.py build`、烧录、手机连接或真机稳定性测试。
-
-本地验证命令：
+本地验证命令仍然是：
 
 ```bash
 cd omiGlass/esp32
