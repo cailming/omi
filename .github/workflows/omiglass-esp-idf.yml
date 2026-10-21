@@ -1,0 +1,37 @@
+name: OmiGlass ESP-IDF v6.1
+
+on:
+  push:
+    branches:
+      - feature/omiglass-esp-idf-migration
+    paths:
+      - "omiGlass/esp32/**"
+      - ".github/workflows/omiglass-esp-idf.yml"
+  pull_request:
+    paths:
+      - "omiGlass/esp32/**"
+      - ".github/workflows/omiglass-esp-idf.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ESP32-S3 build
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 确认 ESP-IDF 版本
+        run: idf.py --version
+
+      - name: 编译 OmiGlass ESP-IDF 固件
+        working-directory: omiGlass/esp32
+        run: |
+          idf.py set-target esp32s3
+          idf.py build
