@@ -120,7 +120,7 @@ extern "C" void app_main(void)
 
     // Phase 4：初始化 ESP-IDF 原生 NimBLE GATT Server。
     // BLE 初始化失败不会阻止 Mic / Opus 继续启动，便于各阶段独立诊断。
-    const esp_err_t ble_err = ble_service_init();
+    const esp_err_t ble_err = ble_service_init(board_device_serial());
     if (ble_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 4 BLE Core 已启动；本阶段不发送实时音频");
     } else {
