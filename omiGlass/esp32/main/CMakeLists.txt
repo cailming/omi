@@ -4,6 +4,7 @@ idf_component_register(
         "board_service.cpp"
         "mic_service.cpp"
         "opus_service.cpp"
+        "ble_service.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -11,4 +12,6 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_i2s
         heap
+        bt
+        nvs_flash
 )
