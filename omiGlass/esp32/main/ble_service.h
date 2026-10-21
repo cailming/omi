@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "board_service.h"
 #include "esp_err.h"
 
 // 初始化 NimBLE、注册 Omi GATT 服务并开始广播。
