@@ -9,6 +9,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "host/ble_att.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
@@ -86,18 +87,15 @@ std::atomic_bool s_photo_subscribed{false};
 std::atomic_bool s_battery_subscribed{false};
 std::atomic_bool s_ota_subscribed{false};
 std::atomic<uint16_t> s_mtu{23};
-std::atomic<uint16_t> s_conn_handle{BLE_HS_CONN_HANDLE_NONE};
 
 uint8_t s_own_addr_type = 0;
 uint8_t s_photo_control_value = 0;
 uint8_t s_battery_level_placeholder = 0;
+std::array<char, 17> s_device_serial{};
 
 uint16_t s_audio_data_handle = 0;
-uint16_t s_audio_codec_handle = 0;
 uint16_t s_photo_data_handle = 0;
-uint16_t s_photo_control_handle = 0;
 uint16_t s_battery_level_handle = 0;
-uint16_t s_ota_control_handle = 0;
 uint16_t s_ota_data_handle = 0;
 
 ble_gatt_chr_def s_main_characteristics[5]{};
@@ -162,7 +160,7 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
         return append_string(ctxt->om, OMI_HARDWARE_REVISION);
 
     case CharacteristicId::SERIAL_NUMBER:
-        return append_string(ctxt->om, board_device_serial());
+        return append_string(ctxt->om, s_device_serial.data());
 
     case CharacteristicId::OTA_CONTROL: {
         // OTA 逻辑尚未迁移，先保持协议可读，状态定义为 IDLE。
@@ -277,7 +275,7 @@ void build_gatt_table()
         &AUDIO_CODEC_UUID.u,
         CharacteristicId::AUDIO_CODEC,
         BLE_GATT_CHR_F_READ,
-        &s_audio_codec_handle);
+        nullptr);
     configure_characteristic(
         s_main_characteristics[2],
         &PHOTO_DATA_UUID.u,
@@ -289,7 +287,7 @@ void build_gatt_table()
         &PHOTO_CONTROL_UUID.u,
         CharacteristicId::PHOTO_CONTROL,
         BLE_GATT_CHR_F_WRITE,
-        &s_photo_control_handle);
+        nullptr);
 
     configure_characteristic(
         s_battery_characteristics[0],
@@ -334,7 +332,7 @@ void build_gatt_table()
         &OTA_CONTROL_UUID.u,
         CharacteristicId::OTA_CONTROL,
         BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
-        &s_ota_control_handle);
+        nullptr);
     configure_characteristic(
         s_ota_characteristics[1],
         &OTA_DATA_UUID.u,
@@ -405,7 +403,6 @@ int gap_event_callback(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             s_connected.store(true);
-            s_conn_handle.store(event->connect.conn_handle);
             s_mtu.store(23);
             reset_subscription_state();
             ESP_LOGI(TAG, "BLE 已连接，conn_handle=%u", event->connect.conn_handle);
@@ -419,7 +416,6 @@ int gap_event_callback(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE 已断开，reason=%d，重新广播", event->disconnect.reason);
         s_connected.store(false);
-        s_conn_handle.store(BLE_HS_CONN_HANDLE_NONE);
         s_mtu.store(23);
         reset_subscription_state();
         start_advertising();
@@ -597,11 +593,19 @@ esp_err_t initialize_nvs()
 
 } // namespace
 
-esp_err_t ble_service_init()
+esp_err_t ble_service_init(const char *device_serial)
 {
+    if (device_serial == nullptr || device_serial[0] == '\0') {
+        ESP_LOGE(TAG, "BLE 初始化需要有效的设备序列号");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     if (s_ready.load()) {
         return ESP_OK;
     }
+
+    std::strncpy(s_device_serial.data(), device_serial, s_device_serial.size() - 1);
+    s_device_serial.back() = '\0';
 
     ESP_LOGI(TAG, "初始化 ESP-IDF v6.1 原生 NimBLE GATT Server");
 
