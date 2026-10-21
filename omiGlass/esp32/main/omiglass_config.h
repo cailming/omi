@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "driver/gpio.h"
@@ -48,6 +49,21 @@ constexpr int OMI_MIC_GAIN = 2;
 constexpr uint32_t OMI_MIC_READ_TIMEOUT_MS = 30;
 constexpr uint32_t OMI_MIC_DMA_DESC_NUM = 8;
 constexpr uint32_t OMI_MIC_DMA_FRAME_NUM = 256;
+
+// =============================================================================
+// Opus 编码配置
+// 与原 Arduino 固件保持协议与编码参数一致。
+// =============================================================================
+constexpr uint8_t OMI_AUDIO_CODEC_ID = 21;
+constexpr size_t OMI_OPUS_FRAME_SAMPLES = 320;          // 16kHz 下 20ms
+constexpr size_t OMI_OPUS_OUTPUT_MAX_BYTES = 160;
+constexpr int OMI_OPUS_BITRATE = 32000;
+constexpr int OMI_OPUS_COMPLEXITY = 3;
+constexpr int OMI_OPUS_VBR = 1;
+constexpr size_t OMI_AUDIO_RING_BUFFER_SAMPLES = 8000;  // 500ms PCM 缓冲
+
+// 编码帧与麦克风读取帧当前应保持一致；即使未来调整读取粒度，Opus 服务仍支持任意长度 PCM 输入。
+static_assert(OMI_OPUS_FRAME_SAMPLES == 320, "Omi 当前协议要求 20ms / 320 samples Opus 帧");
 
 // =============================================================================
 // 后续阶段会继续使用的硬件参数
