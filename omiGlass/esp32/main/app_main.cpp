@@ -1,3 +1,4 @@
+#include "ble_service.h"
 #include "board_service.h"
 #include "mic_service.h"
 #include "omiglass_config.h"
@@ -35,7 +36,7 @@ void on_mic_pcm(int16_t *data, size_t samples)
         }
     }
 
-    // Phase 3：将麦克风 PCM 送入 Opus 环形缓冲区。
+    // 将麦克风 PCM 送入 Opus 环形缓冲区。
     // Opus 服务允许任意长度输入，不依赖 I2S 恰好一次返回 320 samples。
     if (opus_service_is_ready()) {
         const esp_err_t err = opus_service_receive_pcm(data, samples);
@@ -51,8 +52,8 @@ void on_opus_encoded(const uint8_t *data, size_t len)
         return;
     }
 
-    // Phase 4/5 迁移 BLE 后，这里会把编码后的帧送入 BLE 音频发送队列。
-    // 当前先记录统计值，用于验证编码器输出频率和帧大小。
+    // Phase 4 明确不发送实时音频。
+    // Phase 5 才会把这里的 Opus 帧写入 BLE 音频发送队列并执行 notify。
     ++s_opus_frames_since_report;
     s_opus_bytes_since_report += len;
     if (len > s_opus_max_frame_bytes) {
@@ -117,6 +118,15 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "设备序列号: %s", board_device_serial());
     ESP_LOGI(TAG, "Phase 1 基础板级服务已启动");
 
+    // Phase 4：初始化 ESP-IDF 原生 NimBLE GATT Server。
+    // BLE 初始化失败不会阻止 Mic / Opus 继续启动，便于各阶段独立诊断。
+    const esp_err_t ble_err = ble_service_init();
+    if (ble_err == ESP_OK) {
+        ESP_LOGI(TAG, "Phase 4 BLE Core 已启动；本阶段不发送实时音频");
+    } else {
+        ESP_LOGE(TAG, "BLE Core 初始化失败: %s", esp_err_to_name(ble_err));
+    }
+
     // 先初始化 Opus，再启动麦克风。这样第一批 PCM 到达时就可以直接进入编码环形缓冲区。
     opus_service_set_callback(on_opus_encoded);
     const esp_err_t opus_err = opus_service_init();
@@ -133,13 +143,15 @@ extern "C" void app_main(void)
     if (mic_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 2 PDM 麦克风已启动，等待 PCM 数据");
     } else {
-        // 麦克风失败时不让整个固件退出，仍保留按键和 LED，方便现场诊断。
+        // 麦克风失败时不让整个固件退出，仍保留按键、LED 和 BLE，方便现场诊断。
         ESP_LOGE(TAG, "PDM 麦克风启动失败: %s", esp_err_to_name(mic_err));
     }
 
     uint64_t last_audio_report_ms = board_millis();
 
     while (true) {
+        // BLE Host 自己运行在 NimBLE FreeRTOS Task 中，主循环只同步连接状态给 LED。
+        board_service_set_connected(ble_service_is_connected());
         board_service_process();
 
         if (mic_service_is_running()) {
