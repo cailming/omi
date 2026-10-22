@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 确认 ESP-IDF 版本
         shell: bash
@@ -66,3 +66,13 @@ jobs:
 
             exit "$build_rc"
           fi
+
+          # 当前 app0/app1 均为 0x1C0000。成功后直接报告固件大小和 OTA Slot 余量，
+          # 便于判断 Native ESP-IDF + Wi-Fi/TLS/证书包后是否需要扩展 8MB Flash 分区布局。
+          firmware_bin="build/omiglass_esp_idf.bin"
+          ota_slot_bytes=$((0x1C0000))
+          firmware_bytes=$(stat -c '%s' "$firmware_bin")
+          margin_bytes=$((ota_slot_bytes - firmware_bytes))
+          usage_percent=$((firmware_bytes * 100 / ota_slot_bytes))
+
+          echo "::notice title=OmiGlass firmware size::firmware=${firmware_bytes} bytes, OTA slot=${ota_slot_bytes} bytes, margin=${margin_bytes} bytes, usage=${usage_percent}%"
