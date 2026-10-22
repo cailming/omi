@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BLE = (ROOT / "main" / "ble_service.cpp").read_text(encoding="utf-8")
 AUDIO = (ROOT / "main" / "audio_tx_service.cpp").read_text(encoding="utf-8")
 PHOTO = (ROOT / "main" / "photo_service.cpp").read_text(encoding="utf-8")
+OTA = (ROOT / "main" / "ota_service.cpp").read_text(encoding="utf-8")
 CONFIG = (ROOT / "main" / "omiglass_config.h").read_text(encoding="utf-8")
 
 CHECKS = {
@@ -23,6 +24,8 @@ CHECKS = {
         "const uint8_t value[2] = {s_ota_status.load(), s_ota_progress.load()};",
     "OTA notify sends status and progress":
         "const uint8_t value[2] = {status, progress};",
+    "OTA HTTP User-Agent remains legacy compatible":
+        'http_config.user_agent = "ESP32-OTA/1.0";',
     # Audio packet header: packet index LE + sub-index 0.
     "Audio packet index low byte":
         "packet[0] = static_cast<uint8_t>(s_packet_index & 0xFF);",
@@ -52,7 +55,7 @@ CHECKS = {
         "OMI_PHOTO_PACKET_MAX_BYTES = 202",
 }
 
-SOURCES = BLE + "\n" + AUDIO + "\n" + PHOTO + "\n" + CONFIG
+SOURCES = BLE + "\n" + AUDIO + "\n" + PHOTO + "\n" + OTA + "\n" + CONFIG
 
 failed = False
 for description, token in CHECKS.items():
