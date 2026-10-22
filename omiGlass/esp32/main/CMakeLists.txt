@@ -8,12 +8,14 @@ idf_component_register(
         "audio_tx_service.cpp"
         "camera_service.cpp"
         "photo_service.cpp"
+        "battery_service.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
         esp_hw_support
         esp_driver_gpio
         esp_driver_i2s
+        esp_adc
         heap
         bt
         nvs_flash
