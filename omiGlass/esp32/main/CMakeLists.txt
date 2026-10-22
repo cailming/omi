@@ -6,6 +6,7 @@ idf_component_register(
         "opus_service.cpp"
         "ble_service.cpp"
         "audio_tx_service.cpp"
+        "camera_service.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
