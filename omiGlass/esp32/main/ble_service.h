@@ -30,7 +30,12 @@ bool ble_service_ota_subscribed();
 // 返回当前协商出的 ATT MTU；未连接时返回默认 ATT MTU 23。
 uint16_t ble_service_mtu();
 
-// Phase 5：通过 Audio Data Characteristic 发送一包已经封装好的实时音频数据。
-// packet 必须已经包含 Omi 的 3 字节音频包头。
-// 函数内部使用 ble_gatts_notify_custom()；NimBLE 会接管并释放 mbuf。
-esp_err_t ble_service_notify_audio(const uint8_t *packet, size_t len);
+// Phase 5：通过 Audio Data Characteristic 发送一包通知。
+esp_err_t ble_service_notify_audio(const uint8_t *data, size_t len);
+
+// Phase 7：通过 Photo Data Characteristic 发送一包通知。
+esp_err_t ble_service_notify_photo(const uint8_t *data, size_t len);
+
+// 读取并清除最近一个 Photo Control 1-byte 命令。
+// 命令按原 Arduino 固件解释为 int8_t：-1 单拍，0 停止，正值启动间隔拍照。
+bool ble_service_take_photo_control(int8_t *value);
