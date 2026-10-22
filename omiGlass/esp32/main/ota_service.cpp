@@ -308,7 +308,8 @@ esp_err_t perform_https_ota(const OtaTaskContext &context)
     esp_http_client_config_t http_config{};
     http_config.url = context.url.data();
     http_config.timeout_ms = static_cast<int>(OMI_OTA_HTTP_TIMEOUT_MS);
-    http_config.user_agent = "OmiGlass-ESP-IDF-OTA/1.0";
+    // 保持 Arduino OTA 请求的 User-Agent，避免已有 CDN/WAF/下载服务按 UA 做兼容规则时行为变化。
+    http_config.user_agent = "ESP32-OTA/1.0";
     http_config.keep_alive_enable = true;
     http_config.max_redirection_count = 5;
 
