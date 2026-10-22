@@ -170,3 +170,39 @@ constexpr uint32_t OMI_BATTERY_SAMPLE_DELAY_MS = 10;
 // 对最终电池电压做合理范围保护，保持原固件行为。
 constexpr float OMI_BATTERY_VOLTAGE_CLAMP_MIN = 2.5f;
 constexpr float OMI_BATTERY_VOLTAGE_CLAMP_MAX = 5.0f;
+
+// =============================================================================
+// Wi-Fi / HTTPS OTA 配置
+// 命令字与状态码严格保持原 Arduino OTA BLE 协议不变。
+// =============================================================================
+constexpr uint8_t OMI_OTA_CMD_SET_WIFI = 0x01;
+constexpr uint8_t OMI_OTA_CMD_START_OTA = 0x02;
+constexpr uint8_t OMI_OTA_CMD_CANCEL_OTA = 0x03;
+constexpr uint8_t OMI_OTA_CMD_GET_STATUS = 0x04;
+constexpr uint8_t OMI_OTA_CMD_SET_URL = 0x05;
+
+constexpr uint8_t OMI_OTA_STATUS_IDLE = 0x00;
+constexpr uint8_t OMI_OTA_STATUS_WIFI_CONNECTING = 0x10;
+constexpr uint8_t OMI_OTA_STATUS_WIFI_CONNECTED = 0x11;
+constexpr uint8_t OMI_OTA_STATUS_WIFI_FAILED = 0x12;
+constexpr uint8_t OMI_OTA_STATUS_DOWNLOADING = 0x20;
+constexpr uint8_t OMI_OTA_STATUS_DOWNLOAD_COMPLETE = 0x21;
+constexpr uint8_t OMI_OTA_STATUS_DOWNLOAD_FAILED = 0x22;
+constexpr uint8_t OMI_OTA_STATUS_INSTALLING = 0x30;
+constexpr uint8_t OMI_OTA_STATUS_INSTALL_COMPLETE = 0x31;
+constexpr uint8_t OMI_OTA_STATUS_INSTALL_FAILED = 0x32;
+constexpr uint8_t OMI_OTA_STATUS_REBOOTING = 0x40;
+constexpr uint8_t OMI_OTA_STATUS_ERROR = 0xFF;
+
+constexpr size_t OMI_WIFI_MAX_SSID_LEN = 32;
+constexpr size_t OMI_WIFI_MAX_PASSWORD_LEN = 64;
+constexpr size_t OMI_OTA_MAX_URL_LEN = 256;
+constexpr uint32_t OMI_WIFI_CONNECT_TIMEOUT_MS = 15000;
+constexpr uint32_t OMI_OTA_HTTP_TIMEOUT_MS = 30000;
+constexpr uint32_t OMI_OTA_TASK_STACK_SIZE = 8192;
+constexpr uint32_t OMI_OTA_TASK_PRIORITY = 5;
+constexpr uint32_t OMI_OTA_REBOOT_NOTICE_MS = 2000;
+constexpr uint8_t OMI_OTA_PROGRESS_STEP_PERCENT = 5;
+
+// Phase 10 只接受经过证书校验的 HTTPS 下载地址；不再提供 setInsecure() 等不安全回退路径。
+constexpr const char *OMI_OTA_HTTPS_PREFIX = "https://";
