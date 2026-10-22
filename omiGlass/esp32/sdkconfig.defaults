@@ -31,6 +31,20 @@ CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
 CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
 
 # =============================================================================
+# Wi-Fi / BLE 共存
+# Phase 10 OTA 下载期间 Wi-Fi STA 与 BLE GATT 需要同时工作。
+# =============================================================================
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# =============================================================================
+# HTTPS OTA / TLS
+# 只允许带服务器证书校验的 HTTPS OTA；使用 ESP-IDF 内置 Mozilla Root CA Bundle。
+# =============================================================================
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=n
+
+# =============================================================================
 # Bluetooth / NimBLE
 # 只启用 Peripheral + Broadcaster + GATT Server，暂不需要 Central / GATT Client。
 # =============================================================================
