@@ -1,0 +1,4 @@
+# Host-side only; not part of ESP32 firmware dependencies.
+# Bleak 3.x provides the services property, backend_id and current start_notify API
+# used by phase11_ble_probe.py.
+bleak>=3.0,<4
