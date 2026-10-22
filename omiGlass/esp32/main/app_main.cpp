@@ -7,6 +7,7 @@
 #include "omiglass_config.h"
 #include "opus_service.h"
 #include "photo_service.h"
+#include "power_service.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -41,7 +42,6 @@ void on_mic_pcm(int16_t *data, size_t samples)
     }
 
     // 将麦克风 PCM 送入 Opus 环形缓冲区。
-    // Opus 服务允许任意长度输入，不依赖 I2S 恰好一次返回 320 samples。
     if (opus_service_is_ready()) {
         const esp_err_t err = opus_service_receive_pcm(data, samples);
         if (err != ESP_OK) {
@@ -63,7 +63,6 @@ void on_opus_encoded(const uint8_t *data, size_t len)
     }
 
     // Phase 5：编码完成后将 Opus 帧交给 BLE 音频发送队列。
-    // 未连接或手机没有订阅 Audio Data 时，发送服务会直接跳过本帧，不缓存陈旧语音。
     audio_tx_service_enqueue(data, len);
 }
 
@@ -84,14 +83,30 @@ void publish_battery_reading(bool notify_if_subscribed)
     if (ble_err != ESP_OK) {
         ESP_LOGW(TAG, "更新 BLE Battery Level 失败: %s", esp_err_to_name(ble_err));
     }
+}
 
-    // Phase 8 只完成检测与上报。
-    // 低电降频、临界电压关机等电源策略统一留到 Phase 9，避免阶段职责混在一起。
-    if (reading.battery_voltage <= OMI_BATTERY_CRITICAL_VOLTAGE) {
-        ESP_LOGW(TAG, "电池已达到临界电压 %.3fV；Phase 9 将接入保护策略", static_cast<double>(reading.battery_voltage));
-    } else if (reading.battery_voltage <= OMI_BATTERY_LOW_VOLTAGE) {
-        ESP_LOGW(TAG, "电池电压较低 %.3fV；Phase 9 将接入低电模式", static_cast<double>(reading.battery_voltage));
+void prepare_for_deep_sleep()
+{
+    ESP_LOGI(TAG, "Deep Sleep 前释放 Audio / Photo / Camera / Battery 资源");
+
+    // 先停止上层业务，再释放其依赖的硬件资源。
+    audio_tx_service_reset_queue();
+    photo_service_cancel_upload();
+
+    if (mic_service_is_running()) {
+        mic_service_stop();
     }
+    if (opus_service_is_ready()) {
+        opus_service_deinit();
+    }
+    if (camera_service_is_ready()) {
+        camera_service_deinit();
+    }
+    if (battery_service_is_ready()) {
+        battery_service_deinit();
+    }
+
+    // NimBLE Host / Controller 由 power_service 在进入 Deep Sleep 前统一停止。
 }
 
 void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
@@ -159,6 +174,19 @@ void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
             static_cast<unsigned>(photo_stats.remaining_bytes));
     }
 
+    const BatteryReading battery = battery_service_latest();
+    if (battery.valid) {
+        ESP_LOGI(
+            TAG,
+            "Power：state=%s battery=%.3fV/%u%% BLE=%s Audio=%s Photo=%s",
+            power_service_state_name(),
+            static_cast<double>(battery.battery_voltage),
+            battery.percentage,
+            ble_service_is_connected() ? "连接" : "未连接",
+            ble_service_audio_subscribed() ? "活动" : "空闲",
+            photo_service_is_uploading() ? "上传中" : "空闲");
+    }
+
     s_mic_samples_since_report = 0;
     s_mic_peak_since_report = 0;
     s_opus_frames_since_report = 0;
@@ -189,8 +217,17 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "设备序列号: %s", board_device_serial());
     ESP_LOGI(TAG, "Phase 1 基础板级服务已启动");
 
+    // Phase 9：先启用 ESP-IDF 原生 Power Management。
+    // 这样后续 BLE / Camera / I2S 初始化过程也在 80MHz 上限下运行。
+    power_service_set_prepare_deep_sleep_handler(prepare_for_deep_sleep);
+    const esp_err_t power_err = power_service_init();
+    if (power_err == ESP_OK) {
+        ESP_LOGI(TAG, "Phase 9 Power Management 已启动");
+    } else {
+        ESP_LOGE(TAG, "Power Management 初始化失败: %s", esp_err_to_name(power_err));
+    }
+
     // 初始化 ESP-IDF 原生 NimBLE GATT Server。
-    // BLE 初始化失败不会阻止其他模块继续启动，便于各阶段独立诊断。
     const esp_err_t ble_err = ble_service_init(board_device_serial());
     if (ble_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 4 BLE Core 已启动");
@@ -207,7 +244,6 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Battery ADC 初始化失败: %s", esp_err_to_name(battery_err));
     }
 
-    // Phase 5：初始化实时音频发送队列。
     const esp_err_t tx_err = audio_tx_service_init();
     if (tx_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 5 BLE Audio TX 已启动，等待手机订阅 Audio Data Notify");
@@ -215,7 +251,6 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "BLE Audio TX 初始化失败: %s", esp_err_to_name(tx_err));
     }
 
-    // Phase 6：初始化 Camera。Phase 7 会在其上层持有 framebuffer 并分包发送。
     const esp_err_t camera_err = camera_service_init();
     if (camera_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 6 Camera 已启动");
@@ -223,7 +258,6 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Camera 初始化失败: %s", esp_err_to_name(camera_err));
     }
 
-    // Phase 7：初始化 Photo Control / Capture / BLE 分包上传状态机。
     const esp_err_t photo_err = photo_service_init();
     if (photo_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 7 Photo BLE 已启动，等待 Photo Data Notify 订阅");
@@ -231,23 +265,19 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Photo BLE 初始化失败: %s", esp_err_to_name(photo_err));
     }
 
-    // 先初始化 Opus，再启动麦克风。这样第一批 PCM 到达时就可以直接进入编码环形缓冲区。
     opus_service_set_callback(on_opus_encoded);
     const esp_err_t opus_err = opus_service_init();
     if (opus_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 3 Opus 编码器已启动，Codec ID=%u", opus_service_codec_id());
     } else {
-        // Opus 初始化失败时仍继续启动麦克风，便于独立诊断 Phase 2 硬件链路。
         ESP_LOGE(TAG, "Opus 编码器初始化失败: %s", esp_err_to_name(opus_err));
     }
 
-    // 注册 PCM 回调后启动 PDM RX。
     mic_service_set_callback(on_mic_pcm);
     const esp_err_t mic_err = mic_service_start();
     if (mic_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 2 PDM 麦克风已启动，等待 PCM 数据");
     } else {
-        // 麦克风失败时不让整个固件退出，仍保留按键、LED、BLE 和 Camera，方便现场诊断。
         ESP_LOGE(TAG, "PDM 麦克风启动失败: %s", esp_err_to_name(mic_err));
     }
 
@@ -256,56 +286,67 @@ extern "C" void app_main(void)
     bool last_battery_subscribed = false;
 
     while (true) {
-        // BLE Host 自己运行在 NimBLE FreeRTOS Task 中，主循环只同步连接状态给 LED。
         board_service_set_connected(ble_service_is_connected());
         board_service_process();
 
         if (mic_service_is_running()) {
-            // 每次请求 320 samples，即 16kHz 下约 20ms PCM。
             mic_service_process();
         }
 
         if (opus_service_is_ready()) {
-            // 与原 Arduino 固件一致：采集和编码分成两个步骤，中间通过 PCM 环形缓冲解耦。
             opus_service_process();
         }
 
-        // 音频发送必须始终先于图片发送执行。
-        // Photo 服务还会再次查询 Audio Queue；只要仍有音频排队，本轮图片发送就会主动让路。
+        // 实时音频始终优先于图片。
         audio_tx_service_process();
 
         const uint64_t now_ms = board_millis();
         photo_service_process(now_ms);
 
-        // 保留原 Arduino 固件的 20 秒 Battery 内部检测周期。
         if (battery_service_is_ready() && now_ms - last_battery_check_ms >= OMI_BATTERY_CHECK_INTERVAL_MS) {
             publish_battery_reading(true);
             last_battery_check_ms = now_ms;
         }
 
-        // 手机刚订阅 Battery Notify 时立即推送最近一次结果，不必再等 20 秒。
+        // 手机刚订阅 Battery Notify 时立即推送最近一次有效结果。
         const bool battery_subscribed = ble_service_battery_subscribed();
         if (battery_service_is_ready() && battery_subscribed && !last_battery_subscribed) {
             const BatteryReading latest = battery_service_latest();
-            const esp_err_t notify_err = ble_service_update_battery_level(latest.percentage, true);
-            if (notify_err != ESP_OK) {
-                ESP_LOGW(TAG, "首次 Battery Notify 失败: %s", esp_err_to_name(notify_err));
+            if (latest.valid) {
+                const esp_err_t notify_err = ble_service_update_battery_level(latest.percentage, true);
+                if (notify_err != ESP_OK) {
+                    ESP_LOGW(TAG, "首次 Battery Notify 失败: %s", esp_err_to_name(notify_err));
+                }
             }
         }
         last_battery_subscribed = battery_subscribed;
 
         const BoardButtonEvent event = board_service_take_button_event();
         if (event == BoardButtonEvent::SHORT_PRESS) {
-            // 目前只验证按键事件链路。后续会把短按行为接回业务状态机。
-            ESP_LOGI(TAG, "收到短按事件");
+            ESP_LOGI(TAG, "收到短按事件，登记为用户活动");
         } else if (event == BoardButtonEvent::LONG_PRESS) {
-            // 深睡关机将在电源管理阶段迁移，这里先确认 2 秒长按可以被稳定识别。
-            ESP_LOGI(TAG, "收到长按事件，等待后续电源管理模块处理");
+            ESP_LOGI(TAG, "收到长按事件，交给 Phase 9 执行关机 / Deep Sleep");
         }
+
+        // Phase 9：统一处理 CPU 频率、自动 Light Sleep、低电策略和 Deep Sleep。
+        const BatteryReading latest_battery = battery_service_latest();
+        PowerServiceInputs power_inputs{};
+        power_inputs.ble_connected = ble_service_is_connected();
+        power_inputs.audio_streaming = ble_service_audio_subscribed();
+        power_inputs.photo_uploading = photo_service_is_uploading();
+        power_inputs.battery_valid = latest_battery.valid;
+        power_inputs.battery_voltage = latest_battery.battery_voltage;
+        power_inputs.short_press = event == BoardButtonEvent::SHORT_PRESS;
+        power_inputs.long_press = event == BoardButtonEvent::LONG_PRESS;
+        power_service_process(now_ms, power_inputs);
 
         report_runtime_status_if_needed(now_ms, last_runtime_report_ms);
 
-        // I2S 读取本身会等待一帧；这里再短暂让出 CPU，避免异常情况下空转。
-        board_delay_ms(1);
+        // 高带宽业务保持快速调度；空闲时放大阻塞窗口，给 Tickless Idle / 自动 Light Sleep 更多机会。
+        if (ble_service_audio_subscribed() || photo_service_is_uploading()) {
+            board_delay_ms(1);
+        } else {
+            board_delay_ms(20);
+        }
     }
 }
