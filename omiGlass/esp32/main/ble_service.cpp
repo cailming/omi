@@ -89,8 +89,12 @@ std::atomic_bool s_ota_subscribed{false};
 std::atomic<uint16_t> s_mtu{23};
 std::atomic<uint16_t> s_conn_handle{BLE_HS_CONN_HANDLE_NONE};
 
+// Photo Control 回调发生在 NimBLE Host Task。
+// 这里先把命令保存成原子状态，再由 app_main 所在线程取走处理，避免跨任务直接操作 Camera。
+std::atomic_bool s_photo_control_pending{false};
+std::atomic<int> s_photo_control_command{0};
+
 uint8_t s_own_addr_type = 0;
-uint8_t s_photo_control_value = 0;
 uint8_t s_battery_level_placeholder = 0;
 std::array<char, 17> s_device_serial{};
 
@@ -132,7 +136,7 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
 {
     switch (id) {
     case CharacteristicId::AUDIO_DATA:
-        // Audio Data 的实时数据通过 notify 下发，主动读取不返回缓存音频。
+        // Audio Data 的主要用途是 Notify；读取时保持空值，兼容原 GATT 权限。
         return 0;
 
     case CharacteristicId::AUDIO_CODEC: {
@@ -141,7 +145,7 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
     }
 
     case CharacteristicId::PHOTO_DATA:
-        // Phase 7 才会接入真实图片数据。
+        // Photo Data 的主要用途是 Notify；读取时保持空值，兼容原 GATT 权限。
         return 0;
 
     case CharacteristicId::BATTERY_LEVEL:
@@ -190,14 +194,18 @@ int handle_characteristic_write(struct ble_gatt_access_ctxt *ctxt, Characteristi
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
 
+        uint8_t raw_value = 0;
         uint16_t copied = 0;
-        const int rc = ble_hs_mbuf_to_flat(ctxt->om, &s_photo_control_value, 1, &copied);
+        const int rc = ble_hs_mbuf_to_flat(ctxt->om, &raw_value, 1, &copied);
         if (rc != 0 || copied != 1) {
             return BLE_ATT_ERR_UNLIKELY;
         }
 
-        // Phase 6/7 迁移 Camera 后再执行真实拍照逻辑。
-        ESP_LOGI(TAG, "收到 Photo Control=%d，当前仅记录不执行拍照", static_cast<int8_t>(s_photo_control_value));
+        const int8_t signed_value = static_cast<int8_t>(raw_value);
+        s_photo_control_command.store(static_cast<int>(signed_value));
+        s_photo_control_pending.store(true);
+
+        ESP_LOGI(TAG, "收到 Photo Control=%d，已交给业务主循环处理", static_cast<int>(signed_value));
         return 0;
     }
 
@@ -366,14 +374,6 @@ void reset_subscription_state()
     s_ota_subscribed.store(false);
 }
 
-void reset_connection_state()
-{
-    s_connected.store(false);
-    s_conn_handle.store(BLE_HS_CONN_HANDLE_NONE);
-    s_mtu.store(23);
-    reset_subscription_state();
-}
-
 void update_connection_parameters(uint16_t conn_handle)
 {
     ble_gap_upd_params params{};
@@ -415,14 +415,16 @@ int gap_event_callback(struct ble_gap_event *event, void *arg)
             update_connection_parameters(event->connect.conn_handle);
         } else {
             ESP_LOGW(TAG, "BLE 连接失败，status=%d，重新广播", event->connect.status);
-            reset_connection_state();
             start_advertising();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE 已断开，reason=%d，重新广播", event->disconnect.reason);
-        reset_connection_state();
+        s_connected.store(false);
+        s_conn_handle.store(BLE_HS_CONN_HANDLE_NONE);
+        s_mtu.store(23);
+        reset_subscription_state();
         start_advertising();
         return 0;
 
@@ -516,7 +518,10 @@ void on_stack_reset(int reason)
 {
     ESP_LOGE(TAG, "NimBLE Host reset，reason=%d", reason);
     s_ready.store(false);
-    reset_connection_state();
+    s_connected.store(false);
+    s_conn_handle.store(BLE_HS_CONN_HANDLE_NONE);
+    s_mtu.store(23);
+    reset_subscription_state();
 }
 
 void on_stack_sync()
@@ -595,6 +600,30 @@ esp_err_t initialize_nvs()
     return err;
 }
 
+esp_err_t notify_characteristic(uint16_t value_handle, bool subscribed, const uint8_t *data, size_t len)
+{
+    if (!s_connected.load() || s_conn_handle.load() == BLE_HS_CONN_HANDLE_NONE || !subscribed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (value_handle == 0 || data == nullptr || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // ATT Notification 的 Attribute Value 上限为 MTU - 3。
+    if (s_mtu.load() < len + 3) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (om == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    // ble_gatts_notify_custom() 会接管 om 的生命周期；无论成功失败都不能再次手工 free。
+    const int rc = ble_gatts_notify_custom(s_conn_handle.load(), value_handle, om);
+    return rc == 0 ? ESP_OK : ESP_FAIL;
+}
+
 } // namespace
 
 esp_err_t ble_service_init(const char *device_serial)
@@ -625,7 +654,6 @@ esp_err_t ble_service_init(const char *device_serial)
         return err;
     }
 
-    reset_connection_state();
     build_gatt_table();
 
     // 初始化标准 GAP/GATT 服务，再注册 Omi 自定义服务。
@@ -706,38 +734,22 @@ uint16_t ble_service_mtu()
     return s_mtu.load();
 }
 
-esp_err_t ble_service_notify_audio(const uint8_t *packet, size_t len)
+esp_err_t ble_service_notify_audio(const uint8_t *data, size_t len)
 {
-    if (packet == nullptr || len == 0) {
-        return ESP_ERR_INVALID_ARG;
+    return notify_characteristic(s_audio_data_handle, s_audio_subscribed.load(), data, len);
+}
+
+esp_err_t ble_service_notify_photo(const uint8_t *data, size_t len)
+{
+    return notify_characteristic(s_photo_data_handle, s_photo_subscribed.load(), data, len);
+}
+
+bool ble_service_take_photo_control(int8_t *value)
+{
+    if (value == nullptr || !s_photo_control_pending.exchange(false)) {
+        return false;
     }
 
-    if (!s_ready.load() || !s_connected.load() || !s_audio_subscribed.load()) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const uint16_t conn_handle = s_conn_handle.load();
-    if (conn_handle == BLE_HS_CONN_HANDLE_NONE || s_audio_data_handle == 0) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const uint16_t mtu = s_mtu.load();
-    if (mtu <= 3 || len > static_cast<size_t>(mtu - 3)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(packet, len);
-    if (om == nullptr) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    // ble_gatts_notify_custom() 无论成功或失败都会消费传入的 mbuf，
-    // 因此调用之后绝不能再次手工 os_mbuf_free_chain()。
-    const int rc = ble_gatts_notify_custom(conn_handle, s_audio_data_handle, om);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "发送 Audio Data notify 失败，rc=%d", rc);
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
+    *value = static_cast<int8_t>(s_photo_control_command.load());
+    return true;
 }
