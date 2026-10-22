@@ -23,8 +23,8 @@
 - Phase 4：代码完成，待 Native NimBLE / 手机 GATT 验证
 - Phase 5：代码完成，待 BLE Audio TX 真机验证
 - Phase 6：代码完成，待 Camera 真机验证
-- Phase 7：**代码迁移完成，待 Photo BLE 协议和 Audio+Photo 并发验证**
-- Phase 8：未开始
+- Phase 7：代码完成，待 Photo BLE 协议和 Audio+Photo 并发验证
+- Phase 8：**代码迁移完成，待 ADC 校准、电压精度和 Battery BLE 真机验证**
 - Phase 9：未开始
 - Phase 10：未开始
 - Phase 11：未开始
@@ -317,24 +317,160 @@ Characteristic：1 byte WRITE。
 
 周期仍固定使用原项目配置的 30 秒。
 
-BLE Host Task 只保存命令；真正 Camera 操作在业务主循环处理，避免跨任务直接调用 Camera。
+详细：`PHASE7_PHOTO_BLE.md`
 
-### 与原 Arduino 的一个有意改进
+---
 
-原代码只判断 BLE 已连接就可能抓图。
+## Phase 8：Battery ADC
 
-ESP-IDF 版要求：
+新增：
+
+- `main/battery_service.h`
+- `main/battery_service.cpp`
+- `PHASE8_BATTERY_ADC.md`
+
+CMake 新增：
 
 ```text
-BLE connected
-+ Photo Data subscribed
+esp_adc
 ```
 
-才抓图。
+### 原 Arduino 对应参数
 
-这样不会在客户端没有接收 Photo Data 时占住唯一 framebuffer。
+```text
+GPIO2 / A1
+12-bit
+ADC_11db
+10 次采样平均
+每次间隔 10ms
+每 20 秒检查一次
+```
 
-详细：`PHASE7_PHOTO_BLE.md`
+硬件/算法参数：
+
+```text
+Voltage Divider Ratio   6.086
+Battery Max             4.2V
+Battery Min             3.2V
+Critical                3.3V
+Low                     3.4V
+```
+
+### ESP-IDF v6.1 ADC 链路
+
+```text
+GPIO2
+ ↓
+adc_oneshot_io_to_channel()
+ ↓
+ADC Unit / Channel
+ ↓
+adc_oneshot_read() × 10
+ ↓
+raw average
+ ↓
+Curve Fitting calibration
+ ↓
+adc_cali_raw_to_voltage()
+ ↓
+ADC mV
+ ↓
+× 6.086
+ ↓
+Battery Voltage
+ ↓
+Percentage + smoothing
+ ↓
+BLE Battery Level 0x2A19
+```
+
+ADC 配置：
+
+```text
+ADC_BITWIDTH_12
+ADC_ATTEN_DB_12
+```
+
+不硬编码 ADC channel，由 ESP-IDF 根据 GPIO2 自动解析。
+
+### 校准策略
+
+正常路径：
+
+```text
+adc_cali_create_scheme_curve_fitting()
+adc_cali_raw_to_voltage()
+```
+
+如果校准不可用，则退回原 Arduino 风格：
+
+```text
+raw / 4095 * 3300mV
+```
+
+### 百分比平滑
+
+保留原逻辑：
+
+```text
+一次变化 <= 5% -> 直接采用
+一次变化 > 5%  -> 只向目标方向移动 2%
+```
+
+### BLE Battery Service
+
+标准服务保持：
+
+```text
+Battery Service   0x180F
+Battery Level     0x2A19
+READ + NOTIFY
+```
+
+Phase 4 的占位 0 已改为真实动态百分比。
+
+BLE 层使用原子变量保存当前 Battery Level，避免 `app_main` 与 NimBLE Host Task 的跨任务数据竞争。
+
+启动时：
+
+```text
+立即检测一次
+ ↓
+写入最新 Battery Level
+```
+
+运行时：
+
+```text
+每 20 秒检测
+ ↓
+更新 0x2A19
+ ↓
+已订阅时 Notify
+```
+
+手机刚订阅 Battery Notify 时，会立即尝试发送最近一次有效结果。
+
+### Phase 8 不执行的策略
+
+当前只记录：
+
+```text
+LOW       <= 3.4V
+CRITICAL  <= 3.3V
+```
+
+不在本阶段：
+
+- 降低 CPU 频率
+- 关闭 Camera
+- 关闭 Audio
+- 自动 Deep Sleep
+- 自动关机
+
+这些留给 Phase 9。
+
+详细：`PHASE8_BATTERY_ADC.md`
 
 ---
 
@@ -345,6 +481,7 @@ app_main()
    │
    ├── board_service_init()
    ├── ble_service_init()
+   ├── battery_service_init()
    ├── audio_tx_service_init()
    ├── camera_service_init()
    ├── photo_service_init()
@@ -359,6 +496,7 @@ app_main()
             ├── Opus Encode
             ├── BLE Audio TX
             ├── Photo Control / Capture / BLE TX
+            ├── Battery ADC / BLE Battery Notify
             ├── Button Event
             └── Runtime Statistics
 ```
@@ -371,7 +509,7 @@ app_main()
 
 GitHub connector 当前也没有返回该分支 Actions run 的实际结果，因此暂时只声明：
 
-> **Phase 0～7 代码迁移完成。**
+> **Phase 0～8 代码迁移完成。**
 
 尚不能声明：
 
@@ -381,6 +519,8 @@ GitHub connector 当前也没有返回该分支 Actions run 的实际结果，�
 - Opus 音频已实际播放
 - JPEG 已在手机端成功重组
 - Audio + Photo 并发已稳定运行
+- GPIO2 ADC 校准结果已与万用表核对
+- Battery Level Notify 已真机验证
 
 本地验证：
 
@@ -393,18 +533,18 @@ idf.py -p <PORT> flash monitor
 
 ---
 
-## 下一步：Phase 8
+## 下一步：Phase 9
 
-迁移 Battery ADC：
+迁移 Power Management：
 
-- GPIO2
-- ESP-IDF ADC oneshot
-- ADC calibration
-- 10 次采样平均
-- 电压分压比例
-- 电量百分比
-- 平滑算法
-- Battery Service read / notify
+- CPU Frequency / PM Lock
+- Idle / Power Save 状态
+- Light Sleep
+- Deep Sleep
+- 长按关机
+- GPIO1 唤醒
+- Photo / Audio / BLE 活动对睡眠的约束
+- Low Battery / Critical Battery 策略
 
 ---
 
@@ -422,4 +562,5 @@ idf.py -p <PORT> flash monitor
 - Audio BLE 包格式不变
 - Camera：VGA JPEG
 - Photo BLE 分包格式不变
+- Battery Service 使用标准 `0x180F / 0x2A19`
 - Arduino `omiGlass/firmware/` 保持不动
