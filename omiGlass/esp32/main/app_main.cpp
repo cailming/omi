@@ -1,4 +1,5 @@
 #include "audio_tx_service.h"
+#include "battery_service.h"
 #include "ble_service.h"
 #include "board_service.h"
 #include "camera_service.h"
@@ -64,6 +65,33 @@ void on_opus_encoded(const uint8_t *data, size_t len)
     // Phase 5：编码完成后将 Opus 帧交给 BLE 音频发送队列。
     // 未连接或手机没有订阅 Audio Data 时，发送服务会直接跳过本帧，不缓存陈旧语音。
     audio_tx_service_enqueue(data, len);
+}
+
+void publish_battery_reading(bool notify_if_subscribed)
+{
+    if (!battery_service_is_ready()) {
+        return;
+    }
+
+    BatteryReading reading{};
+    const esp_err_t err = battery_service_read(&reading);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Battery 检测失败: %s", esp_err_to_name(err));
+        return;
+    }
+
+    const esp_err_t ble_err = ble_service_update_battery_level(reading.percentage, notify_if_subscribed);
+    if (ble_err != ESP_OK) {
+        ESP_LOGW(TAG, "更新 BLE Battery Level 失败: %s", esp_err_to_name(ble_err));
+    }
+
+    // Phase 8 只完成检测与上报。
+    // 低电降频、临界电压关机等电源策略统一留到 Phase 9，避免阶段职责混在一起。
+    if (reading.battery_voltage <= OMI_BATTERY_CRITICAL_VOLTAGE) {
+        ESP_LOGW(TAG, "电池已达到临界电压 %.3fV；Phase 9 将接入保护策略", static_cast<double>(reading.battery_voltage));
+    } else if (reading.battery_voltage <= OMI_BATTERY_LOW_VOLTAGE) {
+        ESP_LOGW(TAG, "电池电压较低 %.3fV；Phase 9 将接入低电模式", static_cast<double>(reading.battery_voltage));
+    }
 }
 
 void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
@@ -170,6 +198,15 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "BLE Core 初始化失败: %s", esp_err_to_name(ble_err));
     }
 
+    // Phase 8：初始化 GPIO2 Battery ADC，并立即做第一次检测。
+    const esp_err_t battery_err = battery_service_init();
+    if (battery_err == ESP_OK) {
+        ESP_LOGI(TAG, "Phase 8 Battery ADC 已启动");
+        publish_battery_reading(false);
+    } else {
+        ESP_LOGE(TAG, "Battery ADC 初始化失败: %s", esp_err_to_name(battery_err));
+    }
+
     // Phase 5：初始化实时音频发送队列。
     const esp_err_t tx_err = audio_tx_service_init();
     if (tx_err == ESP_OK) {
@@ -215,6 +252,8 @@ extern "C" void app_main(void)
     }
 
     uint64_t last_runtime_report_ms = board_millis();
+    uint64_t last_battery_check_ms = board_millis();
+    bool last_battery_subscribed = false;
 
     while (true) {
         // BLE Host 自己运行在 NimBLE FreeRTOS Task 中，主循环只同步连接状态给 LED。
@@ -237,6 +276,23 @@ extern "C" void app_main(void)
 
         const uint64_t now_ms = board_millis();
         photo_service_process(now_ms);
+
+        // 保留原 Arduino 固件的 20 秒 Battery 内部检测周期。
+        if (battery_service_is_ready() && now_ms - last_battery_check_ms >= OMI_BATTERY_CHECK_INTERVAL_MS) {
+            publish_battery_reading(true);
+            last_battery_check_ms = now_ms;
+        }
+
+        // 手机刚订阅 Battery Notify 时立即推送最近一次结果，不必再等 20 秒。
+        const bool battery_subscribed = ble_service_battery_subscribed();
+        if (battery_service_is_ready() && battery_subscribed && !last_battery_subscribed) {
+            const BatteryReading latest = battery_service_latest();
+            const esp_err_t notify_err = ble_service_update_battery_level(latest.percentage, true);
+            if (notify_err != ESP_OK) {
+                ESP_LOGW(TAG, "首次 Battery Notify 失败: %s", esp_err_to_name(notify_err));
+            }
+        }
+        last_battery_subscribed = battery_subscribed;
 
         const BoardButtonEvent event = board_service_take_button_event();
         if (event == BoardButtonEvent::SHORT_PRESS) {
