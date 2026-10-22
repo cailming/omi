@@ -106,6 +106,15 @@ void start_capture(uint64_t now_ms)
     const esp_err_t err = camera_service_capture(&view);
     if (err != ESP_OK) {
         ++s_stats.capture_errors;
+
+        // 抓图失败后结束本次“立即触发”，避免主循环每 1ms 重试一次 Camera。
+        // 周期模式等待下一个 30 秒周期；单拍模式等待用户再次发送命令。
+        s_last_capture_ms = now_ms;
+        s_capture_immediate = false;
+        if (s_capture_interval_ms == 0) {
+            s_capture_enabled = false;
+        }
+
         ESP_LOGW(TAG, "Camera 抓图失败: %s", esp_err_to_name(err));
         return;
     }
