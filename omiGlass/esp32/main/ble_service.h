@@ -39,3 +39,7 @@ esp_err_t ble_service_notify_photo(const uint8_t *data, size_t len);
 // 读取并清除最近一个 Photo Control 1-byte 命令。
 // 命令按原 Arduino 固件解释为 int8_t：-1 单拍，0 停止，正值启动间隔拍照。
 bool ble_service_take_photo_control(int8_t *value);
+
+// Phase 8：更新标准 Battery Level Characteristic (0x2A19) 的最新百分比。
+// notify_if_subscribed=true 时，如果客户端已经订阅 Battery Notify，会同时发送 1-byte 通知。
+esp_err_t ble_service_update_battery_level(uint8_t percentage, bool notify_if_subscribed);
