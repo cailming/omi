@@ -11,8 +11,28 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # =============================================================================
+# CPU / Power Management
+# Phase 9 使用 ESP-IDF v6.1 原生 DFS + Tickless Idle + 自动 Light Sleep。
+# 正常业务最高 80MHz，空闲时允许降到 40MHz。
+# =============================================================================
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=3
+CONFIG_FREERTOS_HZ=1000
+CONFIG_PM_SLP_IRAM_OPT=y
+CONFIG_PM_RTOS_IDLE_OPT=y
+
+# ESP32-S3 BLE 自动 Light Sleep 的官方推荐配置。
+CONFIG_ESP_PHY_MAC_BB_PD=y
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
+CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+
+# =============================================================================
 # Bluetooth / NimBLE
-# Phase 4 只启用 Peripheral + Broadcaster + GATT Server，暂不需要 Central / GATT Client。
+# 只启用 Peripheral + Broadcaster + GATT Server，暂不需要 Central / GATT Client。
 # =============================================================================
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
