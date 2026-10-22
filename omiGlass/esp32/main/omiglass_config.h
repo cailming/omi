@@ -128,6 +128,29 @@ constexpr uint32_t OMI_CAMERA_CAPTURE_INTERVAL_MS = 30000;
 constexpr uint8_t OMI_CAMERA_FIXED_ORIENTATION = 2;    // 0/90/180/270 中的 180°
 
 // =============================================================================
+// Photo BLE 发送配置
+// 严格保持原 Arduino 固件的图片分包格式。
+// =============================================================================
+constexpr size_t OMI_PHOTO_FRAME_INDEX_BYTES = 2;
+constexpr size_t OMI_PHOTO_FIRST_CHUNK_HEADER_BYTES = 3; // frame index + orientation
+constexpr size_t OMI_PHOTO_OTHER_CHUNK_HEADER_BYTES = 2; // frame index
+constexpr size_t OMI_PHOTO_FIRST_CHUNK_JPEG_BYTES = 199;
+constexpr size_t OMI_PHOTO_OTHER_CHUNK_JPEG_BYTES = 200;
+constexpr size_t OMI_PHOTO_PACKET_MAX_BYTES = 202;
+constexpr size_t OMI_PHOTO_MAX_CHUNKS_PER_PROCESS = 2;
+constexpr uint16_t OMI_PHOTO_END_MARKER = 0xFFFF;
+
+static_assert(
+    OMI_PHOTO_FIRST_CHUNK_HEADER_BYTES + OMI_PHOTO_FIRST_CHUNK_JPEG_BYTES == OMI_PHOTO_PACKET_MAX_BYTES,
+    "Omi 首个图片分片必须保持 202 字节上限");
+static_assert(
+    OMI_PHOTO_OTHER_CHUNK_HEADER_BYTES + OMI_PHOTO_OTHER_CHUNK_JPEG_BYTES == OMI_PHOTO_PACKET_MAX_BYTES,
+    "Omi 后续图片分片必须保持 202 字节上限");
+static_assert(
+    OMI_PHOTO_PACKET_MAX_BYTES <= OMI_BLE_MTU_SIZE - 3,
+    "Configured BLE MTU must fit one complete Omi photo notification");
+
+// =============================================================================
 // 后续阶段会继续使用的硬件参数
 // =============================================================================
 constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
