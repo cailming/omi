@@ -94,8 +94,12 @@ std::atomic<uint16_t> s_conn_handle{BLE_HS_CONN_HANDLE_NONE};
 std::atomic_bool s_photo_control_pending{false};
 std::atomic<int> s_photo_control_command{0};
 
-// Battery Level 会同时被业务主循环更新、被 NimBLE Host Task 读取，因此使用原子值避免数据竞争。
+// Battery / OTA 状态会同时被业务任务更新、被 NimBLE Host Task 读取，因此使用原子值避免数据竞争。
 std::atomic<uint8_t> s_battery_level{0};
+std::atomic<uint8_t> s_ota_status{OMI_OTA_STATUS_IDLE};
+std::atomic<uint8_t> s_ota_progress{0};
+
+BleOtaCommandHandler s_ota_command_handler = nullptr;
 
 uint8_t s_own_addr_type = 0;
 std::array<char, 17> s_device_serial{};
@@ -134,6 +138,12 @@ int append_string(struct os_mbuf *om, const char *value)
     return append_value(om, value, std::strlen(value));
 }
 
+int append_ota_status(struct os_mbuf *om)
+{
+    const uint8_t value[2] = {s_ota_status.load(), s_ota_progress.load()};
+    return append_value(om, value, sizeof(value));
+}
+
 int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, CharacteristicId id)
 {
     switch (id) {
@@ -170,16 +180,10 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
     case CharacteristicId::SERIAL_NUMBER:
         return append_string(ctxt->om, s_device_serial.data());
 
-    case CharacteristicId::OTA_CONTROL: {
-        // OTA 逻辑尚未迁移，先保持协议可读，状态定义为 IDLE。
-        const uint8_t status[2] = {0x00, 0x00};
-        return append_value(ctxt->om, status, sizeof(status));
-    }
-
-    case CharacteristicId::OTA_DATA: {
-        const uint8_t status = 0x00;
-        return append_value(ctxt->om, &status, sizeof(status));
-    }
+    case CharacteristicId::OTA_CONTROL:
+    case CharacteristicId::OTA_DATA:
+        // 与原 Arduino OTA 协议一致：读取返回 [status, progress] 两个字节。
+        return append_ota_status(ctxt->om);
 
     case CharacteristicId::PHOTO_CONTROL:
         break;
@@ -224,8 +228,13 @@ int handle_characteristic_write(struct ble_gatt_access_ctxt *ctxt, Characteristi
             return BLE_ATT_ERR_UNLIKELY;
         }
 
-        // Phase 10 再接入真实 Wi-Fi / HTTPS OTA。
-        ESP_LOGI(TAG, "收到 OTA Control 命令 0x%02X，长度=%u；当前仅记录不执行", buffer[0], copied);
+        if (s_ota_command_handler == nullptr) {
+            ESP_LOGW(TAG, "收到 OTA Control，但 Phase 10 Handler 尚未注册");
+            return 0;
+        }
+
+        // Handler 只做快速协议解析和启动 OTA Task；不能在 NimBLE Host Task 内执行 Wi-Fi/TLS 阻塞操作。
+        s_ota_command_handler(buffer.data(), copied);
         return 0;
     }
 
@@ -702,6 +711,11 @@ esp_err_t ble_service_init(const char *device_serial)
     return ESP_OK;
 }
 
+void ble_service_set_ota_command_handler(BleOtaCommandHandler handler)
+{
+    s_ota_command_handler = handler;
+}
+
 bool ble_service_is_ready()
 {
     return s_ready.load();
@@ -775,4 +789,18 @@ esp_err_t ble_service_update_battery_level(uint8_t percentage, bool notify_if_su
         true,
         &percentage,
         sizeof(percentage));
+}
+
+esp_err_t ble_service_update_ota_status(uint8_t status, uint8_t progress, bool notify_if_subscribed)
+{
+    s_ota_status.store(status);
+    s_ota_progress.store(progress);
+
+    // OTA Control / Data 的 Read 会立即返回最新状态；未订阅时无需把“不能 notify”当成错误。
+    if (!notify_if_subscribed || !s_connected.load() || !s_ota_subscribed.load()) {
+        return ESP_OK;
+    }
+
+    const uint8_t value[2] = {status, progress};
+    return notify_characteristic(s_ota_data_handle, true, value, sizeof(value));
 }
