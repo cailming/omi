@@ -134,16 +134,28 @@ Photo 线协议保持完全一致；Native 只避免在没有接收端时占用 
 
 `6.086` 是旧固件已有的实测 divider ratio，而 Native 又增加 ADC Curve Fitting。两者叠加是否导致系统性偏差不能只靠源码判断。
 
+Phase 11 已增加同一次 ADC 采样的双路径诊断输出：
+
+```text
+raw average
+rawApprox = raw/4095*3300 -> battery voltage
+calibrated = Curve Fitting -> battery voltage
+selected voltage
+percentage
+```
+
+最终业务逻辑仍优先采用 Curve Fitting；本次改动只增加诊断可观测性，不改变 BLE Battery Level 和低电策略。
+
 真机必须同时记录：
 
 ```text
 万用表实际电池电压
 Arduino 报告电压
 Native calibrated 电压
-Native raw fallback 电压
+Native raw approximation 电压
 ```
 
-然后再决定是否保留 Curve Fitting 路径。
+然后再决定是否保留 Curve Fitting 路径，或重新标定 `6.086`。
 
 ---
 
@@ -232,7 +244,18 @@ OTA Data NOTIFY  -> [status, progress]
 - Photo chunk index little-endian；
 - Photo orientation=2；
 - Photo 199/200/202 byte 约束；
-- Photo `FF FF` 结束标记。
+- Photo `FF FF` 结束标记；
+- Arduino `app.cpp` 中真实 Audio/Photo 字节发送片段。
+
+CI workflow 现在同时监听：
+
+```text
+omiGlass/firmware/src/config.h
+omiGlass/firmware/src/app.cpp
+omiGlass/esp32/**
+```
+
+如果 Arduino 参考实现以后发生变化，Phase 11 会要求重新审计，而不是继续基于旧假设报告“兼容”。
 
 这些检查的目的，是防止 Phase 12 重构时无意改变手机端线协议。
 
@@ -329,6 +352,7 @@ python3 tools/phase11_ble_probe.py --audio-seconds 60 --photo
 
 - 万用表对比；
 - Arduino 与 Native 同板对比；
+- 同一次采样记录 rawApprox / calibrated 两条路径；
 - 20s 更新；
 - READ / NOTIFY；
 - 3.4V / 3.3V 阈值行为。
@@ -406,9 +430,9 @@ Button / LED                  AUDITED / NEED HW TEST
 Power                         AUDITED / NEED HW TEST
 OTA protocol                  AUDITED
 P11-001 OTA Control READ      FIXED
-P11-002 Battery calibration   NEED HW TEST
+P11-002 Battery calibration   DIAGNOSTICS ADDED / NEED HW TEST
 Source parity CI              ENABLED
-Wire behavior CI              ENABLED
+Wire behavior CI              ENABLED + ARDUINO APP BASELINE GUARD
 Host BLE probe                ADDED
 ESP-IDF v6.1 build            MUST REMAIN GREEN
 ```
