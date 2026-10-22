@@ -18,22 +18,11 @@ namespace {
 static const char *TAG = "power";
 
 // =============================================================================
-// Phase 9 电源策略参数
-// 保留原 Arduino 固件的 80MHz 正常频率、40MHz 省电频率和时间阈值。
-// ESP32-S3 的 ESP_PM_CPU_FREQ_MAX 合法上限档位为 80/160/240MHz，
-// 因此迁移版本使用 80MHz 作为业务最高频率，不使用原 config.h 中未真正启用的 100MHz 值。
+// Phase 9 / 11 电源策略
+// 关键频率和时间阈值统一放在 omiglass_config.h，便于和 Arduino 基线做自动对齐检查。
+// ESP32-S3 的 ESP_PM_CPU_FREQ_MAX 合法档位为 80/160/240MHz，因此业务最高频率保持 80MHz。
+// Arduino config.h 中 MAX_CPU_FREQ_MHZ=100 并没有在实际主流程启用，Native 不复制这个未使用配置。
 // =============================================================================
-constexpr int POWER_MAX_CPU_FREQ_MHZ = 80;
-constexpr int POWER_MIN_CPU_FREQ_MHZ = 40;
-
-constexpr uint64_t POWER_LIGHT_SLEEP_IDLE_MS = 5000;
-constexpr uint64_t POWER_SAVE_IDLE_MS = 45000;
-constexpr uint64_t POWER_DEEP_SLEEP_IDLE_MS = 300000;
-
-constexpr uint64_t POWER_OFF_SEQUENCE_MS = 800;
-constexpr uint64_t POWER_OFF_BLINK_HALF_PERIOD_MS = 200;
-constexpr uint64_t LOW_BATTERY_BLINK_HALF_PERIOD_MS = 1000;
-constexpr uint32_t BLE_STOP_SETTLE_MS = 20;
 
 esp_pm_lock_handle_t s_cpu_max_lock = nullptr;
 esp_pm_lock_handle_t s_no_light_sleep_lock = nullptr;
@@ -173,7 +162,7 @@ void stop_nimble_before_deep_sleep()
     }
 
     // 给 NimBLE Host Task 一小段时间退出并执行 nimble_port_freertos_deinit()。
-    vTaskDelay(pdMS_TO_TICKS(BLE_STOP_SETTLE_MS));
+    vTaskDelay(pdMS_TO_TICKS(OMI_BLE_STOP_SETTLE_MS));
 
     const esp_err_t deinit_err = nimble_port_deinit();
     if (deinit_err != ESP_OK) {
@@ -235,10 +224,10 @@ void process_powering_off(uint64_t now_ms)
     const uint64_t elapsed_ms = now_ms - s_power_off_start_ms;
 
     // 与原 Arduino 固件一致：关机阶段 200ms 半周期快速闪烁，约 800ms。
-    const bool led_on = ((elapsed_ms / POWER_OFF_BLINK_HALF_PERIOD_MS) % 2U) == 0U;
+    const bool led_on = ((elapsed_ms / OMI_POWER_OFF_BLINK_HALF_PERIOD_MS) % 2U) == 0U;
     set_status_led(led_on);
 
-    if (elapsed_ms < POWER_OFF_SEQUENCE_MS) {
+    if (elapsed_ms < OMI_POWER_OFF_SEQUENCE_MS) {
         return;
     }
 
@@ -262,7 +251,7 @@ void apply_runtime_led_override(uint64_t now_ms)
 
     if (s_state == PowerState::LOW_BATTERY) {
         // 低电状态采用 1 秒半周期慢闪；每轮在 board_service 更新后覆盖 LED。
-        const bool led_on = ((now_ms / LOW_BATTERY_BLINK_HALF_PERIOD_MS) % 2U) == 0U;
+        const bool led_on = ((now_ms / OMI_LOW_BATTERY_BLINK_HALF_PERIOD_MS) % 2U) == 0U;
         set_status_led(led_on);
     }
 }
@@ -278,7 +267,7 @@ void update_runtime_locks(uint64_t now_ms, const PowerServiceInputs &inputs)
     // 3. 离线空闲超过 45 秒后允许降至 40MHz；
     // 4. 低电模式除实时业务外优先允许降频。
     bool need_max_cpu = high_bandwidth_active || inputs.ble_connected;
-    if (!inputs.ble_connected && idle_ms >= POWER_SAVE_IDLE_MS) {
+    if (!inputs.ble_connected && idle_ms >= OMI_POWER_SAVE_IDLE_MS) {
         need_max_cpu = false;
     }
     if (s_state == PowerState::LOW_BATTERY && !high_bandwidth_active) {
@@ -294,7 +283,7 @@ void update_runtime_locks(uint64_t now_ms, const PowerServiceInputs &inputs)
     // Light Sleep：
     // 使用 ESP-IDF 自动 Light Sleep，而不是手工 esp_light_sleep_start()。
     // 音频、图片或最近 5 秒内有活动时禁止睡眠，其余时间释放锁让 Tickless Idle 决定睡多久。
-    const bool block_light_sleep = high_bandwidth_active || idle_ms < POWER_LIGHT_SLEEP_IDLE_MS;
+    const bool block_light_sleep = high_bandwidth_active || idle_ms < OMI_POWER_LIGHT_SLEEP_IDLE_MS;
     if (block_light_sleep) {
         acquire_no_light_sleep_lock();
     } else {
@@ -333,8 +322,8 @@ esp_err_t power_service_init()
     }
 
     esp_pm_config_t pm_config{};
-    pm_config.max_freq_mhz = POWER_MAX_CPU_FREQ_MHZ;
-    pm_config.min_freq_mhz = POWER_MIN_CPU_FREQ_MHZ;
+    pm_config.max_freq_mhz = OMI_NORMAL_CPU_FREQ_MHZ;
+    pm_config.min_freq_mhz = OMI_MIN_CPU_FREQ_MHZ;
     pm_config.light_sleep_enable = true;
 
     esp_err_t err = esp_pm_configure(&pm_config);
@@ -374,8 +363,8 @@ esp_err_t power_service_init()
     ESP_LOGI(
         TAG,
         "Phase 9 Power Management 初始化完成：CPU=%d~%dMHz，自动 Light Sleep=启用",
-        POWER_MIN_CPU_FREQ_MHZ,
-        POWER_MAX_CPU_FREQ_MHZ);
+        OMI_MIN_CPU_FREQ_MHZ,
+        OMI_NORMAL_CPU_FREQ_MHZ);
     return ESP_OK;
 }
 
@@ -432,7 +421,7 @@ void power_service_process(uint64_t now_ms, const PowerServiceInputs &inputs)
 
     const uint64_t idle_ms = now_ms - s_last_activity_ms;
     if (!inputs.ble_connected && !inputs.audio_streaming && !inputs.photo_uploading &&
-        idle_ms >= POWER_DEEP_SLEEP_IDLE_MS) {
+        idle_ms >= OMI_POWER_DEEP_SLEEP_IDLE_MS) {
         request_shutdown(PowerShutdownReason::IDLE_TIMEOUT, now_ms);
         process_powering_off(now_ms);
         return;
@@ -441,7 +430,7 @@ void power_service_process(uint64_t now_ms, const PowerServiceInputs &inputs)
     if (inputs.battery_valid && inputs.battery_voltage <= OMI_BATTERY_LOW_VOLTAGE) {
         set_state(PowerState::LOW_BATTERY);
     } else if (!inputs.ble_connected && !inputs.audio_streaming && !inputs.photo_uploading &&
-               idle_ms >= POWER_SAVE_IDLE_MS) {
+               idle_ms >= OMI_POWER_SAVE_IDLE_MS) {
         set_state(PowerState::POWER_SAVE);
     } else {
         set_state(PowerState::ACTIVE);
