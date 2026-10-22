@@ -8,3 +8,5 @@ dependencies:
     version: ">=6.1,<6.2"
   78/esp-opus:
     version: "1.0.5"
+  espressif/esp32-camera:
+    version: "2.1.8"
