@@ -28,10 +28,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 确认 ESP-IDF 版本
-        run: idf.py --version
+        shell: bash
+        run: |
+          # GitHub Actions 会覆盖官方镜像的默认 entrypoint，因此需要显式加载 ESP-IDF 环境。
+          source "$IDF_PATH/export.sh"
+          idf.py --version
 
       - name: 编译 OmiGlass ESP-IDF 固件
+        shell: bash
         working-directory: omiGlass/esp32
         run: |
+          # 与上一步相同，每个 shell step 都是独立进程，需要重新加载 ESP-IDF 环境。
+          source "$IDF_PATH/export.sh"
           idf.py set-target esp32s3
           idf.py build
