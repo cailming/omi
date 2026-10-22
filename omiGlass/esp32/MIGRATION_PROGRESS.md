@@ -29,7 +29,7 @@
 | Phase 8 | Battery ADC | ✅ 已迁移 / CI 编译通过 |
 | Phase 9 | Power Management | ✅ 已迁移 / CI 编译通过 |
 | Phase 10 | Wi-Fi / HTTPS OTA | ✅ **已迁移 / ESP-IDF v6.1 CI 编译通过** |
-| Phase 11 | 整机功能对齐 | 🚧 **IN PROGRESS：源码审计 + parity CI + 真机验证矩阵** |
+| Phase 11 | 整机功能对齐 | ✅ **软件侧可迁移/可静态验证部分已收口；🚧 仅剩真机验证** |
 | Phase 12 | 架构优化 | ⬜ 未开始 |
 
 > “CI 编译通过”只表示源码已经在官方 ESP-IDF v6.1 环境中成功构建，不等于真机硬件和手机端联调已经通过。
@@ -269,6 +269,8 @@ Deep Sleep 条件：
 
 GPIO1 低电平唤醒。
 
+Phase 11 已把 Power 关键时间/频率阈值统一迁入 `omiglass_config.h`，避免局部硬编码漂移。
+
 详细：`PHASE9_POWER_MANAGEMENT.md`
 
 ---
@@ -349,25 +351,35 @@ then Deep Sleep
 
 ---
 
-## Phase 11：整机功能对齐（IN PROGRESS）
+## Phase 11：整机功能对齐
 
-Phase 11 不再扩展大块业务功能，而是把 Arduino 基线与 Native ESP-IDF 的外部行为逐项核对并固化。
+Phase 11 中**能靠源码迁移、静态审计和 CI 自动化完成的部分已经收口**。
 
-当前已经建立：
+已经建立：
 
 ```text
 PHASE11_SYSTEM_PARITY.md
-        ↓
-Arduino vs Native 对齐矩阵
-        ↓
-MATCH / INTENTIONAL CHANGE / FIXED / NEED HW TEST / WATCH
+PHASE11_SOFTWARE_CLOSURE.md
 ```
 
-CI 在正式 `idf.py build` 前会运行：
+并把 Arduino 基线与 Native ESP-IDF 的外部行为逐项分为：
+
+```text
+MATCH
+INTENTIONAL CHANGE
+FIXED
+NEED HW TEST
+WATCH
+```
+
+### CI 自动保护
+
+正式 `idf.py build` 前会运行：
 
 ```bash
 python3 tools/check_phase11_parity.py
 python3 tools/check_phase11_wire_behavior.py
+python3 tools/check_phase11_runtime_contracts.py
 ```
 
 自动保护：
@@ -378,9 +390,15 @@ python3 tools/check_phase11_wire_behavior.py
 - Photo 首包 199B / 后续 200B / 最大 202B / `FF FF`；
 - OTA Control READ `[status,0]`；
 - OTA Data READ/NOTIFY `[status,progress]`；
+- OTA SET_WIFI / SET_URL payload 偏移与大端 URL length；
+- Button / LED / Power 时间阈值；
+- Audio > Photo 调度；
+- OTA maintenance / cancel-before-sleep；
+- Deep Sleep 资源释放与 GPIO1 wake；
+- PM / Tickless / BLE Modem Sleep / Wi-Fi coexist / HTTPS-only Kconfig；
 - Arduino `app.cpp` 的真实 Audio/Photo 字节行为基线。
 
-已经发现并修复：
+### 已修复 / 已增强
 
 ```text
 P11-001
@@ -389,41 +407,60 @@ Native 原先返回 [status, progress]
 修复为 Arduino 实际行为 [status, 0]
 ```
 
-已经明确保留的有意差异包括：
+```text
+P11-002
+Battery 增加同一次 ADC 采样的：
+rawApprox / Curve Fitting / selected 三组电压诊断
+供万用表真机裁决
+```
 
-- Audio 队列满时 Native 丢最旧帧，优先实时性；
-- 未订阅 Audio 时不积压旧音频；
-- Photo 未订阅时不抓图；
-- Notify / MTU 失败不把数据当成已成功发送；
-- Native 使用真正的 200～400ms Advertising interval；
-- 连接后主动请求 25～50ms connection interval；
-- Battery 使用 ADC Curve Fitting（需真机与万用表裁决）；
-- 自动 Light Sleep / 5min Offline Deep Sleep / Critical Battery Shutdown；
-- OTA 强制 HTTPS + X.509 校验。
+Power 运行参数也已经从 `power_service.cpp` 局部数字统一到共享配置。
 
-真机辅助脚本：
+### 真机辅助脚本
 
 ```bash
 python3 -m pip install -r tools/requirements-phase11.txt
+
+# 基础 GATT / Device Info / Battery / OTA READ
 python3 tools/phase11_ble_probe.py
+
+# 60 秒 Audio
 python3 tools/phase11_ble_probe.py --audio-seconds 60
+
+# 单拍并重组 JPEG
 python3 tools/phase11_ble_probe.py --photo
+
+# 安全的 OTA GET_STATUS Notify
+python3 tools/phase11_ble_probe.py --ota-status-notify
+
+# 20 次连接/断开压力测试
+python3 tools/phase11_ble_probe.py --reconnect-count 20
 ```
 
-当前必须真机裁决的重点：
+串口日志可以自动分析：
 
-1. PDM 16kHz / Mic gain / DMA 稳定性；
-2. 60s Opus + BLE Audio 连续性；
-3. VGA JPEG 完整重组；
-4. Battery ADC Curve Fitting 与万用表偏差；
-5. BLE MTU / reconnect / connection params；
-6. Automatic Light Sleep / DFS / Deep Sleep / GPIO1 wake；
-7. Wi-Fi + BLE coexistence；
-8. HTTPS OTA 正常、失败、cancel、低电和长按安全路径。
+```bash
+idf.py monitor | tee omiglass.log
+python3 tools/phase11_serial_probe.py omiglass.log
+```
 
-详细：`PHASE11_SYSTEM_PARITY.md`
+会检查服务启动、panic、Mic 约 16k samples/s、Opus 约 50fps、Battery 双路径诊断和 Power State。
 
-Phase 11 在真机矩阵完成前保持 **IN PROGRESS**，不会仅凭 CI 编译成功标记为 COMPLETE。
+### 现在只剩真机裁决
+
+1. Boot / Octal PSRAM；
+2. GPIO1 Button / GPIO21 LED；
+3. PDM Mic 电平、噪声、真实采样率；
+4. 60s Opus + BLE Audio 解码质量；
+5. VGA JPEG / Audio+Photo 并发；
+6. 手机实际 ATT MTU / connection params / 20 次重连；
+7. Battery 万用表 vs Arduino vs Native rawApprox/calibrated；
+8. 3.4V / 3.3V 阈值；
+9. DFS / Automatic Light Sleep / Deep Sleep 电流 / GPIO1 wake；
+10. Wi-Fi + BLE coexistence；
+11. HTTPS OTA 正常、失败、cancel、低电和长按安全路径。
+
+这些项目无法再通过继续改源码“迁移掉”，必须接真实硬件验证。
 
 ---
 
@@ -442,18 +479,14 @@ idf.py set-target esp32s3
 idf.py build
 ```
 
-结果：
-
-```text
-SUCCESS
-```
-
 第一轮真实编译发现并已修复：
 
 1. `ble_hs_util_ensure_addr()` 需要显式 `host/util/util.h`；
 2. `uint32_t` 设备序列号使用 `%X` 被 `-Werror=format` 拒绝，已改用 `PRIX32`。
 
-### 固件大小
+### 固件大小监控
+
+最近确认值：
 
 ```text
 Firmware        1,560,080 bytes
@@ -462,13 +495,13 @@ Margin            274,928 bytes
 Usage                  85%
 ```
 
-因此当前仍保持原双 `0x1C0000` OTA App Slot，不在 Phase 10/11 修改分区布局。
+因此当前仍保持原双 `0x1C0000` OTA App Slot，不在 Phase 11 修改分区布局。
 
-85% 使用率已列为 Phase 11/12 的持续监控项。
+CI 现在会：
 
-CI 现在还会：
-
-- Phase 11 parity/wire checker；
+- Phase 11 parity / wire / runtime contract checker；
+- Python BLE/serial probe 语法检查；
+- ESP-IDF v6.1 完整编译；
 - 失败时生成 compiler error annotations；
 - 成功时报告 firmware/slot/margin/usage；
 - 同一分支自动取消过期构建。
@@ -482,7 +515,9 @@ CI 现在还会：
 - Native 工程能在 ESP-IDF v6.1 完整编译；
 - 当前 binary 能放入现有 OTA Slot；
 - Phase 0～10 的 C/C++ / CMake / Kconfig 已进入真实 CI 编译闭环；
-- Phase 11 的关键常量和手机端线协议已经进入自动 parity CI 保护。
+- Phase 11 手机端线协议已经进入自动 CI 防回归；
+- Phase 11 Button/LED/Power/OTA maintenance 等运行时契约已经进入自动 CI 防回归；
+- 真机测试已有 BLE 和串口自动探针。
 
 ### 仍待真机
 
@@ -526,16 +561,16 @@ CI 现在还会：
 
 ## 下一步
 
-Phase 11 当前重点不是继续拆组件，而是完成：
+Phase 11 软件侧已经收口。下一步只有两条合理路径：
 
 ```text
-源码行为审计
-  +
-CI 契约保护
-  +
-Host BLE probe
-  +
-真机验证矩阵
+A. 接 XIAO ESP32S3 Sense 跑 Phase 11 真机矩阵
 ```
 
-全部收口后，再进入 Phase 12 架构优化。
+或在真机验证通过之后：
+
+```text
+B. 进入 Phase 12 架构优化
+```
+
+在没有真机结果之前，不继续通过猜测修改协议或硬件行为。
