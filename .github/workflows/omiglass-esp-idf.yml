@@ -41,4 +41,28 @@ jobs:
           # 与上一步相同，每个 shell step 都是独立进程，需要重新加载 ESP-IDF 环境。
           source "$IDF_PATH/export.sh"
           idf.py set-target esp32s3
-          idf.py build
+
+          # 保留完整编译日志，同时在失败时把关键错误提升为 GitHub Annotation。
+          # 这样即使 Actions 原始日志过大，Chat 模式仍能从公开 Job 页面读取具体编译错误。
+          set +e
+          idf.py build 2>&1 | tee idf-build.log
+          build_rc=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$build_rc" -ne 0 ]; then
+            echo "ESP-IDF build failed with exit code $build_rc"
+
+            grep -E -i \
+              '(^|[[:space:]])(fatal error:|error:|CMake Error|ninja: error:|FAILED:|undefined reference|does not fit|overflowed by)' \
+              idf-build.log \
+              | tail -n 40 \
+              | while IFS= read -r line; do
+                  # GitHub workflow command 需要转义百分号和换行控制字符。
+                  escaped=${line//'%'/'%25'}
+                  escaped=${escaped//$'\r'/'%0D'}
+                  escaped=${escaped//$'\n'/'%0A'}
+                  echo "::error title=ESP-IDF build::${escaped}"
+                done
+
+            exit "$build_rc"
+          fi
