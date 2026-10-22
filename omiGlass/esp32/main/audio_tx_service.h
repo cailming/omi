@@ -28,6 +28,10 @@ bool audio_tx_service_enqueue(const uint8_t *opus_data, size_t len);
 // 每次最多发送少量帧，避免 BLE 发送长期占用主循环。
 void audio_tx_service_process();
 
+// 查询当前是否仍有待发送音频。
+// Phase 7 的 Photo BLE 会用它实现“音频优先，图片让路”。
+bool audio_tx_service_has_pending();
+
 // 清空所有待发送帧，但不重置累计发送统计。
 void audio_tx_service_reset_queue();
 
