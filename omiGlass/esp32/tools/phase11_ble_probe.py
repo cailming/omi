@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Phase 11 BLE hardware probe for OmiGlass.
+"""Phase 11 BLE 真机探针。
 
-Safe default mode is read-only: scan, connect, enumerate GATT, validate UUIDs /
-properties and read Device Info, Codec, Battery and OTA state.
+默认只做安全的只读检查：扫描、连接、枚举 GATT、检查 UUID / Properties，
+并读取 Device Info、Codec、Battery 和 OTA 状态。
 
-Optional --audio-seconds N subscribes to live Audio notifications and validates
-packet headers. Optional --photo triggers one Photo Control single-shot and
-validates/reassembles one JPEG transfer.
+可选能力：
+- --audio-seconds N：订阅实时 Audio，检查 packet index / sub-index；
+- --photo：触发一次单拍并重组 JPEG；
+- --ota-status-notify：发送安全的 GET_STATUS 命令并验证 OTA Data Notify；
+- --reconnect-count N：完成主测试后反复连接/断开 N 次，验证广播恢复和重连稳定性。
 
-Tested against the Bleak 3.x API surface. Install with:
+依赖 Bleak 3.x：
     python3 -m pip install 'bleak>=3.0,<4'
 """
 
@@ -16,9 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import struct
 import sys
-import time
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -51,6 +51,7 @@ SERIAL_UUID = "00002a25-0000-1000-8000-00805f9b34fb"
 EXPECTED_CODEC_ID = 21
 EXPECTED_ORIENTATION = 2
 PHOTO_END_INDEX = 0xFFFF
+OTA_CMD_GET_STATUS = 0x04
 
 EXPECTED_SERVICES = {
     OMI_SERVICE_UUID,
@@ -181,6 +182,17 @@ class PhotoCapture:
         self.chunks += 1
 
 
+@dataclass
+class OtaStatusCapture:
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    packets: list[bytes] = field(default_factory=list)
+
+    def callback(self, _char: BleakGATTCharacteristic, data: bytearray) -> None:
+        raw = bytes(data)
+        self.packets.append(raw)
+        self.event.set()
+
+
 async def validate_static_gatt(client: BleakClient) -> None:
     service_uuids = {normalize_uuid(service.uuid) for service in client.services}
     for expected in EXPECTED_SERVICES:
@@ -245,7 +257,7 @@ async def capture_photo(client: BleakClient, timeout: float) -> None:
     capture = PhotoCapture()
     await client.start_notify(PHOTO_DATA_UUID, capture.callback)
     try:
-        # int8 -1 single-shot is encoded as 0xFF.
+        # int8 -1 单拍命令在线上编码为 0xFF。
         await client.write_gatt_char(PHOTO_CONTROL_UUID, bytes([0xFF]), response=True)
         print(f"[INFO] Waiting up to {timeout:.1f}s for one Photo transfer...")
         await asyncio.wait_for(capture.done.wait(), timeout=timeout)
@@ -258,6 +270,39 @@ async def capture_photo(client: BleakClient, timeout: float) -> None:
     check(len(capture.jpeg) >= 4, f"Photo JPEG bytes = {len(capture.jpeg)}")
     check(capture.jpeg[:2] == b"\xFF\xD8", "JPEG SOI marker FF D8")
     check(capture.jpeg[-2:] == b"\xFF\xD9", "JPEG EOI marker FF D9")
+
+
+async def validate_ota_status_notify(client: BleakClient, timeout: float) -> None:
+    """只发送 GET_STATUS，不修改 Wi-Fi/URL，也不会启动 OTA。"""
+    capture = OtaStatusCapture()
+    await client.start_notify(OTA_DATA_UUID, capture.callback)
+    try:
+        await client.write_gatt_char(OTA_CONTROL_UUID, bytes([OTA_CMD_GET_STATUS]), response=True)
+        await asyncio.wait_for(capture.event.wait(), timeout=timeout)
+    finally:
+        await client.stop_notify(OTA_DATA_UUID)
+
+    check(bool(capture.packets), "OTA GET_STATUS 收到 Notify")
+    payload = capture.packets[-1]
+    check(len(payload) == 2, f"OTA Notify length = {len(payload)}")
+    check(0 <= payload[1] <= 100, f"OTA Notify progress in range: {payload[1]}%")
+    current = bytes(await client.read_gatt_char(OTA_DATA_UUID))
+    check(current == payload, f"OTA Data READ 与最近 Notify 一致: {payload.hex(' ')}")
+
+
+async def stress_reconnect(device, count: int, connect_timeout: float, settle_seconds: float) -> None:
+    if count <= 0:
+        return
+
+    print(f"[INFO] Starting reconnect stress: {count} cycles")
+    for index in range(1, count + 1):
+        if settle_seconds > 0:
+            await asyncio.sleep(settle_seconds)
+        async with BleakClient(device, timeout=connect_timeout) as client:
+            check(client.is_connected, f"Reconnect {index}/{count}: connected")
+            codec = bytes(await client.read_gatt_char(AUDIO_CODEC_UUID))
+            check(codec == bytes([EXPECTED_CODEC_ID]), f"Reconnect {index}/{count}: GATT readable")
+        print(f"[PASS] Reconnect {index}/{count}: disconnected cleanly")
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -273,11 +318,16 @@ async def run(args: argparse.Namespace) -> int:
         print(f"[INFO] Backend: {client.backend_id}")
         await validate_static_gatt(client)
 
+        if args.ota_status_notify:
+            await validate_ota_status_notify(client, args.ota_notify_timeout)
+
         if args.audio_seconds > 0:
             await capture_audio(client, args.audio_seconds)
 
         if args.photo:
             await capture_photo(client, args.photo_timeout)
+
+    await stress_reconnect(device, args.reconnect_count, args.connect_timeout, args.reconnect_settle)
 
     print("\nPhase 11 BLE probe PASSED.")
     return 0
@@ -288,9 +338,13 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--name", default=DEVICE_NAME, help="BLE device name")
     parser.add_argument("--scan-timeout", type=float, default=15.0)
     parser.add_argument("--connect-timeout", type=float, default=30.0)
-    parser.add_argument("--audio-seconds", type=float, default=0.0, help="Subscribe to Audio Data for N seconds")
-    parser.add_argument("--photo", action="store_true", help="Trigger and validate one single-shot photo")
+    parser.add_argument("--audio-seconds", type=float, default=0.0, help="订阅 Audio Data N 秒")
+    parser.add_argument("--photo", action="store_true", help="触发并验证一次单拍")
     parser.add_argument("--photo-timeout", type=float, default=30.0)
+    parser.add_argument("--ota-status-notify", action="store_true", help="发送只读 GET_STATUS 并验证 OTA Notify")
+    parser.add_argument("--ota-notify-timeout", type=float, default=5.0)
+    parser.add_argument("--reconnect-count", type=int, default=0, help="主测试后重复连接/断开次数，例如 20")
+    parser.add_argument("--reconnect-settle", type=float, default=0.5, help="每轮重连前等待广播恢复的秒数")
     return parser.parse_args(argv)
 
 
