@@ -6,6 +6,7 @@
 #include "mic_service.h"
 #include "omiglass_config.h"
 #include "opus_service.h"
+#include "ota_service.h"
 #include "photo_service.h"
 #include "power_service.h"
 
@@ -26,6 +27,9 @@ uint64_t s_opus_frames_since_report = 0;
 uint64_t s_opus_bytes_since_report = 0;
 size_t s_opus_max_frame_bytes = 0;
 
+bool s_ota_paused_microphone = false;
+bool s_pending_long_press_shutdown = false;
+
 void on_mic_pcm(int16_t *data, size_t samples)
 {
     s_mic_samples_since_report += samples;
@@ -41,7 +45,6 @@ void on_mic_pcm(int16_t *data, size_t samples)
         }
     }
 
-    // 将麦克风 PCM 送入 Opus 环形缓冲区。
     if (opus_service_is_ready()) {
         const esp_err_t err = opus_service_receive_pcm(data, samples);
         if (err != ESP_OK) {
@@ -62,8 +65,22 @@ void on_opus_encoded(const uint8_t *data, size_t len)
         s_opus_max_frame_bytes = len;
     }
 
-    // Phase 5：编码完成后将 Opus 帧交给 BLE 音频发送队列。
     audio_tx_service_enqueue(data, len);
+}
+
+void on_ota_status(uint8_t status, uint8_t progress)
+{
+    // OTA Service 不直接依赖 BLE；由 app_main 把状态桥接回原 OTA Data Characteristic。
+    const esp_err_t err = ble_service_update_ota_status(status, progress, true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "更新 BLE OTA 状态失败: %s", esp_err_to_name(err));
+    }
+}
+
+void on_ble_ota_command(const uint8_t *data, size_t len)
+{
+    // 该回调运行在 NimBLE Host Task 中，因此这里只做快速解析/启动 OTA Task。
+    ota_service_handle_command(data, len);
 }
 
 void publish_battery_reading(bool notify_if_subscribed)
@@ -87,7 +104,10 @@ void publish_battery_reading(bool notify_if_subscribed)
 
 void prepare_for_deep_sleep()
 {
-    ESP_LOGI(TAG, "Deep Sleep 前释放 Audio / Photo / Camera / Battery 资源");
+    ESP_LOGI(TAG, "Deep Sleep 前释放 OTA / Audio / Photo / Camera / Battery 资源");
+
+    // Power Service 只会在 OTA Task 已安全退出后进入这里，因此可以释放 Wi-Fi Driver。
+    ota_service_deinit();
 
     // 先停止上层业务，再释放其依赖的硬件资源。
     audio_tx_service_reset_queue();
@@ -109,6 +129,33 @@ void prepare_for_deep_sleep()
     // NimBLE Host / Controller 由 power_service 在进入 Deep Sleep 前统一停止。
 }
 
+void update_ota_maintenance_mode(bool ota_busy, bool &last_ota_busy)
+{
+    if (ota_busy && !last_ota_busy) {
+        ESP_LOGI(TAG, "进入 OTA 维护模式：暂停 Mic / BLE Audio / Photo 数据面，优先保证 HTTPS OTA");
+
+        audio_tx_service_reset_queue();
+        photo_service_cancel_upload();
+
+        if (mic_service_is_running()) {
+            mic_service_stop();
+            s_ota_paused_microphone = true;
+        }
+    } else if (!ota_busy && last_ota_busy) {
+        ESP_LOGI(TAG, "退出 OTA 维护模式：恢复实时业务");
+
+        if (s_ota_paused_microphone) {
+            const esp_err_t err = mic_service_start();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "OTA 结束后恢复 PDM 麦克风失败: %s", esp_err_to_name(err));
+            }
+            s_ota_paused_microphone = false;
+        }
+    }
+
+    last_ota_busy = ota_busy;
+}
+
 void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
 {
     if (now_ms - last_report_ms < 1000) {
@@ -123,7 +170,7 @@ void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
             static_cast<long>(s_mic_peak_since_report));
     }
 
-    if (opus_service_is_ready()) {
+    if (opus_service_is_ready() && !ota_service_is_busy()) {
         const uint64_t average_frame_bytes =
             s_opus_frames_since_report > 0 ? s_opus_bytes_since_report / s_opus_frames_since_report : 0;
 
@@ -178,13 +225,16 @@ void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
     if (battery.valid) {
         ESP_LOGI(
             TAG,
-            "Power：state=%s battery=%.3fV/%u%% BLE=%s Audio=%s Photo=%s",
+            "Power：state=%s battery=%.3fV/%u%% BLE=%s Audio=%s Photo=%s OTA=%s(0x%02X/%u%%)",
             power_service_state_name(),
             static_cast<double>(battery.battery_voltage),
             battery.percentage,
             ble_service_is_connected() ? "连接" : "未连接",
             ble_service_audio_subscribed() ? "活动" : "空闲",
-            photo_service_is_uploading() ? "上传中" : "空闲");
+            photo_service_is_uploading() ? "上传中" : "空闲",
+            ota_service_is_busy() ? "执行中" : "空闲",
+            ota_service_status(),
+            ota_service_progress());
     }
 
     s_mic_samples_since_report = 0;
@@ -217,8 +267,6 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "设备序列号: %s", board_device_serial());
     ESP_LOGI(TAG, "Phase 1 基础板级服务已启动");
 
-    // Phase 9：先启用 ESP-IDF 原生 Power Management。
-    // 这样后续 BLE / Camera / I2S 初始化过程也在 80MHz 上限下运行。
     power_service_set_prepare_deep_sleep_handler(prepare_for_deep_sleep);
     const esp_err_t power_err = power_service_init();
     if (power_err == ESP_OK) {
@@ -227,15 +275,25 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Power Management 初始化失败: %s", esp_err_to_name(power_err));
     }
 
-    // 初始化 ESP-IDF 原生 NimBLE GATT Server。
+    // Phase 10：先初始化 OTA 协议和网络事件基础设施，但保持 Wi-Fi 关闭。
+    const esp_err_t ota_err = ota_service_init();
+    if (ota_err == ESP_OK) {
+        ota_service_set_status_handler(on_ota_status);
+        ble_service_set_ota_command_handler(on_ble_ota_command);
+        ESP_LOGI(TAG, "Phase 10 Wi-Fi / HTTPS OTA 已启动，等待 BLE OTA 命令");
+    } else {
+        ESP_LOGE(TAG, "OTA Service 初始化失败: %s", esp_err_to_name(ota_err));
+    }
+
     const esp_err_t ble_err = ble_service_init(board_device_serial());
     if (ble_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 4 BLE Core 已启动");
+        // 确保 OTA Control 初始 Read 值与 OTA Service 一致。
+        ble_service_update_ota_status(ota_service_status(), ota_service_progress(), false);
     } else {
         ESP_LOGE(TAG, "BLE Core 初始化失败: %s", esp_err_to_name(ble_err));
     }
 
-    // Phase 8：初始化 GPIO2 Battery ADC，并立即做第一次检测。
     const esp_err_t battery_err = battery_service_init();
     if (battery_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 8 Battery ADC 已启动");
@@ -284,24 +342,33 @@ extern "C" void app_main(void)
     uint64_t last_runtime_report_ms = board_millis();
     uint64_t last_battery_check_ms = board_millis();
     bool last_battery_subscribed = false;
+    bool last_ota_busy = false;
 
     while (true) {
         board_service_set_connected(ble_service_is_connected());
         board_service_process();
 
-        if (mic_service_is_running()) {
-            mic_service_process();
-        }
+        bool ota_busy = ota_service_is_busy();
+        update_ota_maintenance_mode(ota_busy, last_ota_busy);
 
-        if (opus_service_is_ready()) {
-            opus_service_process();
-        }
+        // OTA 维护模式下暂停实时音频和图片数据面，BLE OTA 状态通知仍由 NimBLE Task 正常发送。
+        if (!ota_busy) {
+            if (mic_service_is_running()) {
+                mic_service_process();
+            }
 
-        // 实时音频始终优先于图片。
-        audio_tx_service_process();
+            if (opus_service_is_ready()) {
+                opus_service_process();
+            }
+
+            // 实时音频始终优先于图片。
+            audio_tx_service_process();
+        }
 
         const uint64_t now_ms = board_millis();
-        photo_service_process(now_ms);
+        if (!ota_busy) {
+            photo_service_process(now_ms);
+        }
 
         if (battery_service_is_ready() && now_ms - last_battery_check_ms >= OMI_BATTERY_CHECK_INTERVAL_MS) {
             publish_battery_reading(true);
@@ -325,25 +392,51 @@ extern "C" void app_main(void)
         if (event == BoardButtonEvent::SHORT_PRESS) {
             ESP_LOGI(TAG, "收到短按事件，登记为用户活动");
         } else if (event == BoardButtonEvent::LONG_PRESS) {
-            ESP_LOGI(TAG, "收到长按事件，交给 Phase 9 执行关机 / Deep Sleep");
+            if (ota_busy) {
+                // OTA 写 Flash 时不直接睡眠：先取消 OTA，等任务安全退出后再把长按事件交给 Power Service。
+                ESP_LOGW(TAG, "OTA 执行中收到长按关机：先取消 OTA，再进入 Deep Sleep");
+                ota_service_cancel();
+                s_pending_long_press_shutdown = true;
+            } else {
+                ESP_LOGI(TAG, "收到长按事件，交给 Phase 9 执行关机 / Deep Sleep");
+            }
+        }
+
+        const BatteryReading latest_battery = battery_service_latest();
+        ota_busy = ota_service_is_busy();
+
+        // 临界低电也必须先让 OTA Task 停在安全点，避免写 Flash 中途 Deep Sleep。
+        if (ota_busy && latest_battery.valid &&
+            latest_battery.battery_voltage <= OMI_BATTERY_CRITICAL_VOLTAGE) {
+            ESP_LOGW(TAG, "OTA 执行期间达到临界低电，先取消 OTA 再执行低电保护关机");
+            ota_service_cancel();
+        }
+
+        bool deliver_long_press = event == BoardButtonEvent::LONG_PRESS && !ota_busy;
+        if (s_pending_long_press_shutdown && !ota_busy) {
+            deliver_long_press = true;
+            s_pending_long_press_shutdown = false;
         }
 
         // Phase 9：统一处理 CPU 频率、自动 Light Sleep、低电策略和 Deep Sleep。
-        const BatteryReading latest_battery = battery_service_latest();
         PowerServiceInputs power_inputs{};
         power_inputs.ble_connected = ble_service_is_connected();
-        power_inputs.audio_streaming = ble_service_audio_subscribed();
-        power_inputs.photo_uploading = photo_service_is_uploading();
-        power_inputs.battery_valid = latest_battery.valid;
+        // OTA 期间借用“高带宽活动”约束：保持 CPU Max / No-Light-Sleep，且阻止离线空闲 Deep Sleep。
+        power_inputs.audio_streaming = (ble_service_audio_subscribed() && !ota_busy) || ota_busy;
+        power_inputs.photo_uploading = photo_service_is_uploading() && !ota_busy;
+        // OTA Task 尚未退出时暂缓临界低电 Deep Sleep；任务退出后下一轮立即恢复真实 Battery 判定。
+        power_inputs.battery_valid = latest_battery.valid && !ota_busy;
         power_inputs.battery_voltage = latest_battery.battery_voltage;
         power_inputs.short_press = event == BoardButtonEvent::SHORT_PRESS;
-        power_inputs.long_press = event == BoardButtonEvent::LONG_PRESS;
+        power_inputs.long_press = deliver_long_press;
         power_service_process(now_ms, power_inputs);
 
         report_runtime_status_if_needed(now_ms, last_runtime_report_ms);
 
-        // 高带宽业务保持快速调度；空闲时放大阻塞窗口，给 Tickless Idle / 自动 Light Sleep 更多机会。
-        if (ble_service_audio_subscribed() || photo_service_is_uploading()) {
+        if (ota_busy) {
+            // OTA Task 自己阻塞在 Wi-Fi/TLS I/O；主业务循环只负责 BLE/Power/Battery 协调。
+            board_delay_ms(20);
+        } else if (ble_service_audio_subscribed() || photo_service_is_uploading()) {
             board_delay_ms(1);
         } else {
             board_delay_ms(20);
