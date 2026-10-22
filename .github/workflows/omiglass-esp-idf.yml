@@ -40,14 +40,17 @@ jobs:
         shell: bash
         working-directory: omiGlass/esp32
         run: |
-          # 先做纯语法编译；host BLE probe 不需要在 CI 中安装/连接蓝牙即可检查 Python 语法。
+          # 先做纯语法编译；硬件探针本身不在 CI 中连接蓝牙/串口，只检查脚本可执行性。
           python3 -m py_compile \
             tools/check_phase11_parity.py \
             tools/check_phase11_wire_behavior.py \
-            tools/phase11_ble_probe.py
+            tools/check_phase11_runtime_contracts.py \
+            tools/phase11_ble_probe.py \
+            tools/phase11_serial_probe.py
 
           python3 tools/check_phase11_parity.py
           python3 tools/check_phase11_wire_behavior.py
+          python3 tools/check_phase11_runtime_contracts.py
 
       - name: 确认 ESP-IDF 版本
         shell: bash
