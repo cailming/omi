@@ -6,10 +6,12 @@ on:
       - feature/omiglass-esp-idf-migration
     paths:
       - "omiGlass/esp32/**"
+      - "omiGlass/firmware/src/config.h"
       - ".github/workflows/omiglass-esp-idf.yml"
   pull_request:
     paths:
       - "omiGlass/esp32/**"
+      - "omiGlass/firmware/src/config.h"
       - ".github/workflows/omiglass-esp-idf.yml"
   workflow_dispatch:
 
@@ -31,6 +33,12 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
+
+      - name: Phase 11 源码对齐检查
+        shell: bash
+        working-directory: omiGlass/esp32
+        run: |
+          python3 tools/check_phase11_parity.py
 
       - name: 确认 ESP-IDF 版本
         shell: bash
