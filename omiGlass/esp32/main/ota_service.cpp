@@ -527,7 +527,8 @@ void handle_set_url(const uint8_t *data, size_t length)
     s_firmware_url_set = true;
     xSemaphoreGive(s_config_mutex);
 
-    ESP_LOGI(TAG, "OTA HTTPS URL 已更新: %s", url.data());
+    // OTA 地址可能是带签名参数的临时 URL，完整内容不写日志，避免泄露 query token。
+    ESP_LOGI(TAG, "OTA HTTPS URL 已更新，长度=%u；完整 URL 不写入日志", static_cast<unsigned>(url_len));
     publish_status(OMI_OTA_STATUS_IDLE, 0);
 }
 
