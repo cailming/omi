@@ -94,8 +94,10 @@ std::atomic<uint16_t> s_conn_handle{BLE_HS_CONN_HANDLE_NONE};
 std::atomic_bool s_photo_control_pending{false};
 std::atomic<int> s_photo_control_command{0};
 
+// Battery Level 会同时被业务主循环更新、被 NimBLE Host Task 读取，因此使用原子值避免数据竞争。
+std::atomic<uint8_t> s_battery_level{0};
+
 uint8_t s_own_addr_type = 0;
-uint8_t s_battery_level_placeholder = 0;
 std::array<char, 17> s_device_serial{};
 
 uint16_t s_audio_data_handle = 0;
@@ -148,9 +150,10 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
         // Photo Data 的主要用途是 Notify；读取时保持空值，兼容原 GATT 权限。
         return 0;
 
-    case CharacteristicId::BATTERY_LEVEL:
-        // Battery ADC 在 Phase 8 迁移前暂时返回占位值 0。
-        return append_value(ctxt->om, &s_battery_level_placeholder, sizeof(s_battery_level_placeholder));
+    case CharacteristicId::BATTERY_LEVEL: {
+        const uint8_t battery_level = s_battery_level.load();
+        return append_value(ctxt->om, &battery_level, sizeof(battery_level));
+    }
 
     case CharacteristicId::MANUFACTURER_NAME:
         return append_string(ctxt->om, OMI_MANUFACTURER_NAME);
@@ -752,4 +755,24 @@ bool ble_service_take_photo_control(int8_t *value)
 
     *value = static_cast<int8_t>(s_photo_control_command.load());
     return true;
+}
+
+esp_err_t ble_service_update_battery_level(uint8_t percentage, bool notify_if_subscribed)
+{
+    if (percentage > 100) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_battery_level.store(percentage);
+
+    // 即使当前没有连接或没有订阅，也已经更新 GATT Read 会返回的最新值。
+    if (!notify_if_subscribed || !s_connected.load() || !s_battery_subscribed.load()) {
+        return ESP_OK;
+    }
+
+    return notify_characteristic(
+        s_battery_level_handle,
+        true,
+        &percentage,
+        sizeof(percentage));
 }
