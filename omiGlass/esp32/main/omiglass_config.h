@@ -35,6 +35,21 @@ constexpr uint32_t OMI_POWER_OFF_PRESS_MS = 2000;
 constexpr uint32_t OMI_BOOT_SEQUENCE_MS = 1500;
 constexpr uint32_t OMI_BOOT_BLINK_HALF_PERIOD_MS = 150;
 constexpr uint32_t OMI_DISCONNECTED_BLINK_PERIOD_MS = 1000;
+constexpr uint32_t OMI_POWER_OFF_SEQUENCE_MS = 800;
+constexpr uint32_t OMI_POWER_OFF_BLINK_HALF_PERIOD_MS = 200;
+constexpr uint32_t OMI_LOW_BATTERY_BLINK_HALF_PERIOD_MS = 1000;
+
+// =============================================================================
+// Power Management
+// 这些值对应 Arduino 实际运行时使用的 80MHz / 40MHz 与空闲阈值。
+// Arduino config.h 里的 MAX_CPU_FREQ_MHZ=100 没有在主流程真正启用，Native 不复制该未使用值。
+// =============================================================================
+constexpr int OMI_NORMAL_CPU_FREQ_MHZ = 80;
+constexpr int OMI_MIN_CPU_FREQ_MHZ = 40;
+constexpr uint32_t OMI_POWER_LIGHT_SLEEP_IDLE_MS = 5000;
+constexpr uint32_t OMI_POWER_SAVE_IDLE_MS = 45000;
+constexpr uint32_t OMI_POWER_DEEP_SLEEP_IDLE_MS = 300000;
+constexpr uint32_t OMI_BLE_STOP_SETTLE_MS = 20;
 
 // =============================================================================
 // 麦克风配置
