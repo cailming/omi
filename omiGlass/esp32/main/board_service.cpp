@@ -1,5 +1,6 @@
 #include "board_service.h"
 
+#include <cinttypes>
 #include <cstdio>
 
 #include "driver/gpio.h"
@@ -46,12 +47,14 @@ esp_err_t init_device_serial()
         return err;
     }
 
+    // 使用 PRIX32 而不是假设 uint32_t 一定对应 unsigned int。
+    // ESP-IDF v6.1 的当前工具链会把错误的 %X 类型匹配提升为 -Werror=format。
     std::snprintf(
         s_device_serial,
         sizeof(s_device_serial),
-        "%04X%08X",
-        static_cast<uint16_t>(chip_id >> 32),
-        static_cast<uint32_t>(chip_id));
+        "%04" PRIX32 "%08" PRIX32,
+        static_cast<uint32_t>((chip_id >> 32) & 0xFFFFULL),
+        static_cast<uint32_t>(chip_id & 0xFFFFFFFFULL));
 
     ESP_LOGI(TAG, "设备序列号: %s", s_device_serial);
     return ESP_OK;
@@ -127,7 +130,7 @@ void process_button(uint64_t now_ms)
         if (now_ms - s_button_press_time_ms >= OMI_POWER_OFF_PRESS_MS) {
             s_long_press_triggered = true;
             s_pending_button_event = BoardButtonEvent::LONG_PRESS;
-            ESP_LOGI(TAG, "检测到长按事件；真正的关机/深睡将在电源管理阶段接入");
+            ESP_LOGI(TAG, "检测到长按事件，交给 Power Service 处理关机 / Deep Sleep");
         }
     } else if (!pressed && s_button_down) {
         if (now_ms - s_last_debounce_time_ms < OMI_BUTTON_DEBOUNCE_MS) {
@@ -161,12 +164,12 @@ void process_led(uint64_t now_ms)
     }
 
     if (s_connected) {
-        // BLE 已连接时保持常亮。BLE 模块在后续阶段通过 set_connected() 更新状态。
+        // BLE 已连接时保持常亮。BLE 模块通过 set_connected() 更新状态。
         set_led(true);
         return;
     }
 
-    // 尚未迁移 BLE 时默认处于“未连接”状态，每秒翻转一次 LED。
+    // BLE 未连接状态下每秒翻转一次 LED。
     const bool led_on = ((now_ms / OMI_DISCONNECTED_BLINK_PERIOD_MS) % 2U) == 0U;
     set_led(led_on);
 }
