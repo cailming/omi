@@ -2,7 +2,7 @@
 """Phase 11 source-level parity checks for OmiGlass.
 
 This script deliberately compares the immutable Arduino migration baseline against
-Native ESP-IDF source.  It only checks values that are expected to remain equal.
+Native ESP-IDF source. It only checks values that are expected to remain equal.
 Intentional behavior changes (HTTPS hardening, PM strategy, queue policy, etc.)
 are documented in PHASE11_SYSTEM_PARITY.md and are not asserted here.
 """
@@ -30,10 +30,14 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def macro(text: str, name: str) -> str:
+def strip_inline_comment(value: str) -> str:
+    return value.split("//", 1)[0].strip()
+
+
+def macro(text: str, name: str, source: str = "macro") -> str:
     match = re.search(rf"^\s*#define\s+{re.escape(name)}\s+(.+?)\s*$", text, re.MULTILINE)
     if not match:
-        raise ParityError(f"Arduino macro not found: {name}")
+        raise ParityError(f"{source} not found: {name}")
     return strip_inline_comment(match.group(1)).strip()
 
 
@@ -48,14 +52,31 @@ def constexpr(text: str, name: str) -> str:
     return strip_inline_comment(match.group(1)).strip()
 
 
-def strip_inline_comment(value: str) -> str:
-    return value.split("//", 1)[0].strip()
+def native_constant(text: str, name: str) -> str:
+    """Read a native migration constant whether it is a #define or constexpr."""
+    define_match = re.search(
+        rf"^\s*#define\s+{re.escape(name)}\s+(.+?)\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if define_match:
+        return strip_inline_comment(define_match.group(1)).strip()
+
+    match = re.search(
+        rf"constexpr\s+[^;=]+?\b{re.escape(name)}\s*=\s*([^;]+);",
+        text,
+        re.MULTILINE,
+    )
+    if match:
+        return strip_inline_comment(match.group(1)).strip()
+
+    raise ParityError(f"Native constant not found (#define or constexpr): {name}")
 
 
 def canonical_scalar(value: str) -> str:
     value = value.strip()
 
-    # Remove a single pair of wrapping parentheses used by a few Arduino macros.
+    # Remove wrapping parentheses used by a few Arduino macros.
     while value.startswith("(") and value.endswith(")"):
         value = value[1:-1].strip()
 
@@ -67,7 +88,7 @@ def canonical_scalar(value: str) -> str:
         return gpio.group(1)
 
     # Numeric constants used in this project are simple decimal / hex / float
-    # literals.  Strip common C/C++ suffixes before numeric comparison.
+    # literals. Strip common C/C++ suffixes before numeric comparison.
     numeric = re.fullmatch(
         r"([+-]?(?:0[xX][0-9A-Fa-f]+|\d+(?:\.\d*)?|\.\d+))(?:[fFuUlL]+)?",
         value,
@@ -115,8 +136,8 @@ def compare_scalar(
     arduino_name: str,
     native_name: str,
 ) -> None:
-    left_raw = macro(arduino_text, arduino_name)
-    right_raw = constexpr(native_text, native_name)
+    left_raw = macro(arduino_text, arduino_name, "Arduino macro")
+    right_raw = native_constant(native_text, native_name)
     left = canonical_scalar(left_raw)
     right = canonical_scalar(right_raw)
     if left != right:
@@ -133,7 +154,7 @@ def compare_uuid(
     arduino_name: str,
     native_variable: str,
 ) -> None:
-    left = canonical_scalar(macro(arduino_text, arduino_name)).upper()
+    left = canonical_scalar(macro(arduino_text, arduino_name, "Arduino UUID macro")).upper()
     right = native_uuid(ble_text, native_variable).upper()
     if left != right:
         raise ParityError(
