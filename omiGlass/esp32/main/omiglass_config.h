@@ -101,11 +101,11 @@ static_assert(
     "Configured BLE MTU must fit one complete Omi audio notification");
 
 // =============================================================================
-// 后续阶段会继续使用的硬件参数
+// Camera 配置
+// 与原 Arduino 固件保持相同的 XIAO ESP32S3 Sense 引脚和 JPEG 参数。
 // =============================================================================
-constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
-
-// Camera GPIO 映射来自原 Arduino 固件。
+constexpr int OMI_CAMERA_PWDN_GPIO = -1;
+constexpr int OMI_CAMERA_RESET_GPIO = -1;
 constexpr int OMI_CAMERA_XCLK_GPIO = 10;
 constexpr int OMI_CAMERA_SIOD_GPIO = 40;
 constexpr int OMI_CAMERA_SIOC_GPIO = 39;
@@ -120,3 +120,14 @@ constexpr int OMI_CAMERA_Y2_GPIO = 15;
 constexpr int OMI_CAMERA_VSYNC_GPIO = 38;
 constexpr int OMI_CAMERA_HREF_GPIO = 47;
 constexpr int OMI_CAMERA_PCLK_GPIO = 13;
+
+constexpr uint32_t OMI_CAMERA_XCLK_HZ = 6000000;       // 原固件：6MHz
+constexpr int OMI_CAMERA_JPEG_QUALITY = 25;
+constexpr size_t OMI_CAMERA_FRAME_BUFFER_COUNT = 1;
+constexpr uint32_t OMI_CAMERA_CAPTURE_INTERVAL_MS = 30000;
+constexpr uint8_t OMI_CAMERA_FIXED_ORIENTATION = 2;    // 0/90/180/270 中的 180°
+
+// =============================================================================
+// 后续阶段会继续使用的硬件参数
+// =============================================================================
+constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
