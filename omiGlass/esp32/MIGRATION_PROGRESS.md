@@ -11,7 +11,8 @@
 - Target：ESP32-S3
 - 硬件：Seeed Studio XIAO ESP32S3 Sense
 - 原 Arduino 固件：`omiGlass/firmware/`，迁移期间保持不动
-- 当前 Opus 组件：`78/esp-opus 1.0.5`
+- Opus：`78/esp-opus 1.0.5`
+- Camera：`espressif/esp32-camera 2.1.8`
 - 新增代码说明性注释统一使用中文
 
 ## 总体状态
@@ -23,8 +24,8 @@
 | Phase 2 | PDM Mic | 代码完成，待硬件验证 |
 | Phase 3 | Opus Encoder | 代码完成，待 v6.1 编译/真机验证 |
 | Phase 4 | Native NimBLE / GATT | 代码完成，待手机 GATT 验证 |
-| Phase 5 | BLE Audio TX | **代码完成，待手机实时音频验证** |
-| Phase 6 | Camera | 未开始 |
+| Phase 5 | BLE Audio TX | 代码完成，待手机实时音频验证 |
+| Phase 6 | Camera | **代码完成，待 Camera 真机验证** |
 | Phase 7 | Photo BLE | 未开始 |
 | Phase 8 | Battery ADC | 未开始 |
 | Phase 9 | Power | 未开始 |
@@ -39,13 +40,13 @@
 已完成：
 
 - `omiGlass/esp32/` 原生 ESP-IDF 工程。
-- ESP32-S3 / 8MB Flash / Octal PSRAM 基础配置。
-- OTA 分区表按 Arduino 版本迁移。
-- 使用 `app_main()` 作为程序入口。
+- ESP32-S3 / 8MB Flash / Octal PSRAM。
+- OTA 分区表迁移。
+- `app_main()` 入口。
 - `main/idf_component.yml` 固定 ESP-IDF `>=6.1,<6.2`。
-- GitHub Actions 增加 `omiglass-esp-idf.yml`，目标使用官方 ESP-IDF v6.1 环境执行构建。
+- GitHub Actions 增加 `omiglass-esp-idf.yml`。
 
-当前 GitHub 连接器尚未返回该 workflow 的实际运行结果，因此不能声明 CI 已通过。
+当前 GitHub 连接器仍未返回该 workflow 的实际运行状态，因此不能声明 CI 已通过。
 
 ---
 
@@ -71,18 +72,11 @@ Serial.*           -> ESP_LOGx
 ESP.getEfuseMac()  -> esp_efuse_mac_get_default()
 ```
 
-保留：
-
-- 50ms 去抖。
-- 2 秒长按识别。
-- 启动 LED 闪烁。
-- 原设备序列号生成语义。
+保留：50ms 去抖、2 秒长按、启动闪灯和设备序列号语义。
 
 ---
 
 ## Phase 2：PDM 麦克风
-
-原 Arduino legacy I2S 已迁移到 ESP-IDF v6.1 Channel API：
 
 ```text
 GPIO42 PDM CLK
@@ -90,24 +84,16 @@ GPIO41 PDM DATA
 16kHz
 Mono
 PCM16
+320 samples / 20ms
 ```
 
-调用链：
+原 legacy `driver/i2s.h` 已迁移到 ESP-IDF v6.1 Channel API：
 
 ```text
 i2s_new_channel()
-  ↓
 i2s_channel_init_pdm_rx_mode()
-  ↓
 i2s_channel_enable()
-  ↓
 i2s_channel_read()
-```
-
-当前每次读取：
-
-```text
-320 samples = 20ms
 ```
 
 真机目标：约 `16000 samples/s`。
@@ -116,16 +102,10 @@ i2s_channel_read()
 
 ## Phase 3：Opus Encoder
 
-新增：
-
-- `main/opus_service.h/.cpp`
-- `PHASE3_OPUS.md`
-
-参数保持 Arduino 版本：
+参数保持：
 
 ```text
-16kHz
-Mono
+16kHz Mono
 320 samples / 20ms
 32kbps
 Complexity 3
@@ -137,27 +117,16 @@ Max 160 bytes/frame
 数据链：
 
 ```text
-PCM
- ↓
-8000-sample ring buffer
- ↓
-320 samples/frame
- ↓
-opus_encode()
- ↓
-encoded callback
+PCM -> 8000-sample ring buffer -> 320 samples -> opus_encode() -> encoded callback
 ```
+
+详细说明：`PHASE3_OPUS.md`。
 
 ---
 
 ## Phase 4：Native NimBLE / GATT
 
-新增：
-
-- `main/ble_service.h/.cpp`
-- `PHASE4_BLE_CORE.md`
-
-已迁移：
+已完成：
 
 - NimBLE Host。
 - Peripheral / Broadcaster。
@@ -171,7 +140,7 @@ encoded callback
 - Device Information Service。
 - OTA Service。
 
-GATT 主要结构保持：
+主要 GATT：
 
 ```text
 Omi Main Service
@@ -179,13 +148,11 @@ Omi Main Service
   Audio Codec    READ
   Photo Data     READ + NOTIFY
   Photo Control  WRITE
-
-Battery Service
-Device Information Service
-OTA Service
 ```
 
 Preferred ATT MTU：517。
+
+详细说明：`PHASE4_BLE_CORE.md`。
 
 ---
 
@@ -193,118 +160,47 @@ Preferred ATT MTU：517。
 
 新增：
 
-- `main/audio_tx_service.h`
-- `main/audio_tx_service.cpp`
+- `main/audio_tx_service.h/.cpp`
+- `ble_service_notify_audio()`
 - `PHASE5_BLE_AUDIO.md`
 
-BLE Core 新增：
-
-```cpp
-esp_err_t ble_service_notify_audio(const uint8_t *packet, size_t len);
-```
-
-BLE 层现在保存：
+协议保持：
 
 ```text
-当前 connection handle
-Audio Data value handle
-Audio Data Notify 订阅状态
-当前 ATT MTU
+byte 0-1  packet index，little-endian
+byte 2    sub-index = 0
+byte 3+   Opus payload
 ```
 
-### 手机端音频包格式保持不变
-
-```text
-byte 0-1：packet index，little-endian
-byte 2  ：sub-index = 0
-byte 3+ ：Opus payload
-```
-
-最大业务包：
-
-```text
-3 + 160 = 163 bytes
-```
-
-ATT Notification 需要：
-
-```text
-packet <= MTU - 3
-```
-
-因此最大 Opus 帧完整发送至少要求 MTU >= 166；项目目标 MTU 为 517。
-
-### Audio TX Queue
-
-队列容量：
-
-```text
-16 frames
-```
-
-即理论最大约：
-
-```text
-16 × 20ms = 320ms
-```
+队列：16 帧。
 
 实时策略：
 
-- 未连接：不缓存音频。
-- 未订阅 Audio Data Notify：不缓存音频。
-- 队列满：丢最旧帧，保留最新帧。
-- MTU 不足：丢当前旧帧，等待后续新帧。
-- notify 失败：不持续重试旧帧，优先实时性。
-- 每轮最多发送 2 帧，允许轻微追赶但避免一次塞满 BLE Host 队列。
+- 未连接/未订阅不缓存旧语音。
+- 队列满丢最旧帧。
+- MTU 不足丢旧帧。
+- notify 错误不持续重试旧帧。
+- 每轮最多发送 2 帧。
 
-### 当前完整音频链
+当前链路：
 
 ```text
 PDM Mic
   ↓
-PCM16 16kHz
+PCM16
   ↓
-Opus 20ms frame
+Opus
   ↓
-on_opus_encoded()
-  ↓
-audio_tx_service_enqueue()
-  ↓
-16-frame TX Queue
+audio_tx_service
   ↓
 3-byte Omi Header
-  ↓
-ble_service_notify_audio()
-  ↓
-ble_hs_mbuf_from_flat()
   ↓
 ble_gatts_notify_custom()
   ↓
 手机
 ```
 
-NimBLE 的 `ble_gatts_notify_custom()` 会消费传入的 mbuf，因此发送后不能再次手工释放。
-
-### 当前日志统计
-
-每约一秒输出：
-
-```text
-麦克风：samples / peak
-Opus：frames / bytes / avg / max
-BLE Audio：
-  subscribed
-  MTU
-  enqueued
-  sent
-  dropped_not_ready
-  dropped_queue_full
-  dropped_mtu_too_small
-  notify_errors
-  queue_depth
-```
-
-理想稳定状态：
+理想真机状态：
 
 ```text
 Mic samples/s       ≈ 16000
@@ -318,7 +214,124 @@ notify errors       = 0
 
 ---
 
-## 当前 app_main 数据链
+## Phase 6：Camera
+
+新增：
+
+- `main/camera_service.h`
+- `main/camera_service.cpp`
+- `PHASE6_CAMERA.md`
+- `espressif/esp32-camera 2.1.8` 依赖
+
+Camera 参数保持原 Arduino 固件：
+
+```text
+VGA 640x480
+JPEG
+quality 25
+XCLK 6MHz
+1 framebuffer
+PSRAM framebuffer
+CAMERA_GRAB_LATEST
+orientation = 2 / 180°
+```
+
+引脚：
+
+```text
+PWDN   -1
+RESET  -1
+XCLK   GPIO10
+SIOD   GPIO40
+SIOC   GPIO39
+Y9     GPIO48
+Y8     GPIO11
+Y7     GPIO12
+Y6     GPIO14
+Y5     GPIO16
+Y4     GPIO18
+Y3     GPIO17
+Y2     GPIO15
+VSYNC  GPIO38
+HREF   GPIO47
+PCLK   GPIO13
+```
+
+ESP-IDF Camera 生命周期：
+
+```text
+esp_camera_init()
+  ↓
+esp_camera_fb_get()
+  ↓
+CameraFrameView
+  ↓
+esp_camera_fb_return()
+```
+
+当前 app_main 保持原固件默认意图：
+
+```text
+BLE 已连接
+  ↓
+每 30 秒拍一帧
+```
+
+但 Phase 6 只做：
+
+```text
+获取 JPEG
+打印 size / width / height / orientation
+立即归还 framebuffer
+```
+
+明确没有：
+
+```text
+Photo Data notify
+图片分包
+frame index
+0xFFFF end marker
+```
+
+这些留给 Phase 7。
+
+### 调度优先级
+
+当前主循环顺序：
+
+```text
+Mic
+ ↓
+Opus
+ ↓
+BLE Audio TX
+ ↓
+Camera
+```
+
+继续保持：
+
+```text
+Audio > Photo
+```
+
+### Phase 6 真机目标
+
+1. `esp_camera_init()` 成功。
+2. `esp_camera_fb_get()` 稳定返回非空。
+3. width / height = 640x480。
+4. format = JPEG。
+5. JPEG 长度合理且非零。
+6. orientation = 2。
+7. 连续抓图不泄漏 framebuffer。
+8. 抓图时 BLE 不掉线。
+9. 抓图时 Mic / Opus 不永久停止。
+10. BLE Audio Queue 不持续堆积。
+
+---
+
+## 当前 app_main 链路
 
 ```text
 app_main()
@@ -326,6 +339,7 @@ app_main()
    ├── board_service_init()
    ├── ble_service_init(serial)
    ├── audio_tx_service_init()
+   ├── camera_service_init()
    ├── opus_service_init()
    ├── mic_service_start()
    │
@@ -334,39 +348,11 @@ app_main()
           ├── board_service_process()
           ├── mic_service_process()
           ├── opus_service_process()
-          │       ↓
-          │   on_opus_encoded()
-          │       ↓
-          │   audio TX queue
           ├── audio_tx_service_process()
+          ├── Camera 30s capture/release
           ├── button event
           └── runtime statistics
 ```
-
----
-
-## Phase 5 真机验证清单
-
-1. 手机扫描到 `OMI Glass`。
-2. 能成功连接。
-3. Audio Codec 读取 `0x15`。
-4. 手机订阅 Audio Data Notify。
-5. MTU 协商到足够大小，目标 517。
-6. Mic 每秒约 16000 samples。
-7. Opus 每秒约 50 帧。
-8. BLE Audio 每秒约发送 50 帧。
-9. 手机收到的数据保持原有 3-byte header 格式。
-10. packet index 连续递增并按 little-endian 解析。
-11. sub-index 为 0。
-12. 手机端原有 Opus 解码逻辑无需改协议即可工作。
-13. 正常情况下 queue depth 长期接近 0。
-14. queue full drops 不持续增长。
-15. MTU drops 不持续增长。
-16. notify errors 不持续增长。
-17. 关闭 Notify 后不积压旧音频。
-18. 重新开启 Notify 后从当前实时声音开始。
-19. BLE 断开后待发音频队列清空。
-20. 重连重新订阅后可恢复音频发送。
 
 ---
 
@@ -380,11 +366,11 @@ app_main()
 
 因此当前准确状态是：
 
-> **Phase 0～5 的迁移代码已经完成。**
+> **Phase 0～6 的迁移代码已经完成。**
 
 尚不能声明：
 
-> `idf.py build` 已通过、真机已经成功烧录、BLE 音频已经实际播放成功。
+> `idf.py build` 已通过、真机烧录通过、BLE 音频播放成功、Camera 真机拍照成功。
 
 本地验证：
 
@@ -397,22 +383,30 @@ idf.py -p <PORT> flash monitor
 
 ---
 
-## 下一步：Phase 6 Camera
+## 下一步：Phase 7 Photo BLE
 
-Phase 6 只迁 Camera 本身，不发送照片：
+Phase 7 会复用 `CameraFrameView`：
 
 ```text
-esp32-camera component
-GPIO mapping
-VGA JPEG
-JPEG quality 25
-XCLK 6MHz
-PSRAM framebuffer
-frame capture / release
-180° orientation metadata
+JPEG framebuffer
+  ↓
+Photo BLE chunking
+  ↓
+frame index
+  ↓
+orientation byte
+  ↓
+Photo Data notify
+  ↓
+0xFFFF end marker
 ```
 
-Camera 能稳定取到 JPEG framebuffer 后，再在 Phase 7 接 Photo BLE Transport。
+并继续执行：
+
+```text
+如果 Audio TX Queue 有数据
+Photo BLE 主动让路
+```
 
 ---
 
@@ -428,6 +422,6 @@ Camera 能稳定取到 JPEG framebuffer 后，再在 Phase 7 接 Photo BLE Trans
 - 16kHz Mono。
 - Opus 320 samples / 20ms。
 - Audio packet 3-byte header 不变。
-- Camera 基线：VGA JPEG。
+- Camera：VGA JPEG / quality 25 / XCLK 6MHz。
 - 手机端 BLE 协议不变。
 - Arduino `omiGlass/firmware/` 保持不动。
