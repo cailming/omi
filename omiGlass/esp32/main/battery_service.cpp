@@ -172,6 +172,7 @@ void battery_service_deinit()
 
     s_ready = false;
     s_has_percentage = false;
+    s_latest = {};
 }
 
 bool battery_service_is_ready()
@@ -237,6 +238,7 @@ esp_err_t battery_service_read(BatteryReading *reading)
     result.battery_voltage = battery_voltage;
     result.percentage = calculate_percentage(battery_voltage);
     result.calibrated = calibrated;
+    result.valid = true;
 
     s_latest = result;
     *reading = result;
