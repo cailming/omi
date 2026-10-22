@@ -14,6 +14,7 @@
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
+#include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nvs_flash.h"
@@ -144,6 +145,14 @@ int append_ota_status(struct os_mbuf *om)
     return append_value(om, value, sizeof(value));
 }
 
+int append_ota_control_status(struct os_mbuf *om)
+{
+    // Arduino app.cpp 中实际挂载到 OTA Control 的 onRead() 返回 [status, 0]。
+    // OTA progress 仍通过 OTA Data READ / NOTIFY 的第二字节传递。
+    const uint8_t value[2] = {s_ota_status.load(), 0};
+    return append_value(om, value, sizeof(value));
+}
+
 int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, CharacteristicId id)
 {
     switch (id) {
@@ -181,8 +190,9 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
         return append_string(ctxt->om, s_device_serial.data());
 
     case CharacteristicId::OTA_CONTROL:
+        return append_ota_control_status(ctxt->om);
+
     case CharacteristicId::OTA_DATA:
-        // 与原 Arduino OTA 协议一致：读取返回 [status, progress] 两个字节。
         return append_ota_status(ctxt->om);
 
     case CharacteristicId::PHOTO_CONTROL:
@@ -796,7 +806,8 @@ esp_err_t ble_service_update_ota_status(uint8_t status, uint8_t progress, bool n
     s_ota_status.store(status);
     s_ota_progress.store(progress);
 
-    // OTA Control / Data 的 Read 会立即返回最新状态；未订阅时无需把“不能 notify”当成错误。
+    // OTA Data 的 Read 会立即返回最新 [status, progress]；
+    // OTA Control Read 则按 Arduino app.cpp 基线返回 [status, 0]。
     if (!notify_if_subscribed || !s_connected.load() || !s_ota_subscribed.load()) {
         return ESP_OK;
     }
