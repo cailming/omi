@@ -18,19 +18,21 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| Phase 0 | ESP-IDF Skeleton | ✅ 代码完成 |
-| Phase 1 | Board / GPIO / Button / LED | ✅ 代码完成 |
-| Phase 2 | PDM Mic | ✅ 代码完成 |
-| Phase 3 | Opus Encoder | ✅ 代码完成 |
-| Phase 4 | Native NimBLE / GATT | ✅ 代码完成 |
-| Phase 5 | BLE Audio TX | ✅ 代码完成 |
-| Phase 6 | Camera | ✅ 代码完成 |
-| Phase 7 | Photo BLE | ✅ 代码完成 |
-| Phase 8 | Battery ADC | ✅ 代码完成 |
-| Phase 9 | Power Management | ✅ **代码迁移完成** |
-| Phase 10 | Wi-Fi / HTTPS OTA | ⬜ 未开始 |
-| Phase 11 | 整机功能对齐 | ⬜ 未开始 |
+| Phase 0 | ESP-IDF Skeleton | ✅ 已迁移 / CI 编译通过 |
+| Phase 1 | Board / GPIO / Button / LED | ✅ 已迁移 / CI 编译通过 |
+| Phase 2 | PDM Mic | ✅ 已迁移 / CI 编译通过 |
+| Phase 3 | Opus Encoder | ✅ 已迁移 / CI 编译通过 |
+| Phase 4 | Native NimBLE / GATT | ✅ 已迁移 / CI 编译通过 |
+| Phase 5 | BLE Audio TX | ✅ 已迁移 / CI 编译通过 |
+| Phase 6 | Camera | ✅ 已迁移 / CI 编译通过 |
+| Phase 7 | Photo BLE | ✅ 已迁移 / CI 编译通过 |
+| Phase 8 | Battery ADC | ✅ 已迁移 / CI 编译通过 |
+| Phase 9 | Power Management | ✅ 已迁移 / CI 编译通过 |
+| Phase 10 | Wi-Fi / HTTPS OTA | ✅ **已迁移 / ESP-IDF v6.1 CI 编译通过** |
+| Phase 11 | 整机功能对齐 | ⬜ 下一阶段 |
 | Phase 12 | 架构优化 | ⬜ 未开始 |
+
+> “CI 编译通过”只表示源码已经在官方 ESP-IDF v6.1 环境中成功构建，不等于真机硬件和手机端联调已经通过。
 
 ---
 
@@ -39,27 +41,60 @@
 ```text
 app_main()
    │
-   ├── board_service_init()
-   ├── power_service_init()
-   ├── ble_service_init()
-   ├── battery_service_init()
-   ├── audio_tx_service_init()
-   ├── camera_service_init()
-   ├── photo_service_init()
-   ├── opus_service_init()
-   └── mic_service_start()
-            │
-            ↓
-       while(true)
-            │
-            ├── Board / LED / Button
-            ├── Mic PCM
-            ├── Opus Encode
-            ├── BLE Audio TX
-            ├── Photo Control / Capture / BLE TX
-            ├── Battery ADC / BLE Battery Notify
-            ├── Power State / PM Lock / Sleep
-            └── Runtime Statistics
+   ├── board_service
+   ├── power_service
+   ├── ota_service
+   ├── ble_service
+   ├── battery_service
+   ├── audio_tx_service
+   ├── camera_service
+   ├── photo_service
+   ├── opus_service
+   └── mic_service
+```
+
+运行时主要链路：
+
+```text
+PDM Mic
+   ↓
+PCM16 / 16kHz
+   ↓
+Opus 20ms
+   ↓
+BLE Audio
+```
+
+```text
+Camera VGA JPEG
+   ↓
+Photo Chunk
+   ↓
+BLE Photo
+```
+
+```text
+GPIO2 ADC
+   ↓
+Calibration
+   ↓
+Battery %
+   ↓
+BLE Battery Service
+```
+
+```text
+BLE OTA Control
+   ↓
+Wi-Fi STA
+   ↓
+HTTPS + X.509 verify
+   ↓
+ESP OTA app0/app1
+   ↓
+BLE OTA Status
+   ↓
+Restart
 ```
 
 ---
@@ -68,26 +103,23 @@ app_main()
 
 ### Phase 0：ESP-IDF Skeleton
 
-已完成：
-
-- 原生 ESP-IDF 工程
-- ESP32-S3 / 8MB Flash / Octal PSRAM
-- OTA 分区表
+- Native ESP-IDF project
+- ESP32-S3
+- 8MB Flash
+- Octal PSRAM
+- OTA partition table
 - `app_main()`
-- GitHub Actions v6.1 构建工作流
+- CI workflow
 
 ### Phase 1：Board
 
-已迁移：
-
-- GPIO1 电源按键
+- GPIO1 Button
 - GPIO21 LED
-- 50ms 去抖
-- 2 秒长按
-- `millis()` -> `esp_timer_get_time()`
-- `delay()` -> `vTaskDelay()`
-- `Serial` -> `ESP_LOGx`
-- eFuse MAC 序列号
+- 50ms debounce
+- 2s long press
+- `esp_timer_get_time()`
+- FreeRTOS delay
+- eFuse MAC serial
 
 ### Phase 2：PDM Mic
 
@@ -98,7 +130,7 @@ GPIO41 DATA
 320 samples / 20ms
 ```
 
-使用 ESP-IDF v6.1 新 I2S PDM RX Channel API。
+使用 ESP-IDF 新 I2S PDM RX Channel API。
 
 ---
 
@@ -114,6 +146,7 @@ Mono
 Complexity 3
 VBR ON
 Codec ID 21
+Max 160 bytes/frame
 ```
 
 详细：`PHASE3_OPUS.md`
@@ -124,29 +157,32 @@ Codec ID 21
 
 - Advertising
 - Connect / Disconnect
+- GATT Server
+- CCCD Subscribe
 - MTU 517
-- CCCD
 - Omi Main Service
 - Battery Service
-- Device Information
-- OTA Service GATT 骨架
+- Device Information Service
+- OTA Service
 
 详细：`PHASE4_BLE_CORE.md`
 
-### Phase 5：BLE Audio TX
+### Phase 5：BLE Audio
+
+协议保持：
 
 ```text
-Opus Frame
- ↓
-16-frame realtime queue
- ↓
-2-byte packet index
-+ 1-byte sub-index
- ↓
-Audio Data Notify
+byte 0-1 packet index little-endian
+byte 2   sub-index
+byte 3+  Opus
 ```
 
-策略：实时性优先，队列满时丢最旧音频。
+实时策略：
+
+- 16-frame queue
+- 每轮最多 2 帧
+- 队列满丢最旧
+- 不补发陈旧语音
 
 详细：`PHASE5_BLE_AUDIO.md`
 
@@ -156,14 +192,12 @@ Audio Data Notify
 
 ### Phase 6：Camera
 
-保持：
-
 ```text
-VGA 640x480
-JPEG quality 25
+VGA JPEG
+Quality 25
 XCLK 6MHz
+PSRAM framebuffer
 1 framebuffer
-PSRAM
 orientation = 180°
 ```
 
@@ -171,21 +205,19 @@ orientation = 180°
 
 ### Phase 7：Photo BLE
 
-协议保持：
+保持原协议：
 
 ```text
-首包：index(2) + orientation(1) + JPEG <=199 bytes
-后续：index(2) + JPEG <=200 bytes
+首包：frame index + orientation + <=199 JPEG bytes
+后续：frame index + <=200 JPEG bytes
 结束：FF FF
 ```
 
-调度原则：
+优先级：
 
 ```text
 Audio > Photo
 ```
-
-图片 notify 失败时不移动 offset，下轮重试同一 chunk，保证 JPEG 完整性。
 
 详细：`PHASE7_PHOTO_BLE.md`
 
@@ -193,17 +225,15 @@ Audio > Photo
 
 ## Phase 8：Battery ADC
 
-已完成：
-
 ```text
 GPIO2
 ADC oneshot
-ADC_BITWIDTH_12
+12-bit
 ADC_ATTEN_DB_12
-10次采样平均
+10-sample average
 Curve Fitting calibration
-分压比 6.086
-20秒检测周期
+Voltage divider = 6.086
+20s interval
 ```
 
 BLE：
@@ -214,182 +244,202 @@ Battery Level   0x2A19
 READ + NOTIFY
 ```
 
-阈值：
-
-```text
-LOW      <= 3.4V
-CRITICAL <= 3.3V
-```
-
 详细：`PHASE8_BATTERY_ADC.md`
 
 ---
 
 ## Phase 9：Power Management
 
-新增：
+使用 ESP-IDF v6.1 原生：
 
 ```text
-main/power_service.h
-main/power_service.cpp
-PHASE9_POWER_MANAGEMENT.md
-```
-
-### ESP-IDF v6.1 PM
-
-```text
-Max CPU = 80MHz
-Min CPU = 40MHz
-DFS = ON
-Tickless Idle = ON
-Automatic Light Sleep = ON
-Bluetooth Modem Sleep = ON
-```
-
-使用 PM Lock：
-
-```text
-ESP_PM_CPU_FREQ_MAX
-ESP_PM_NO_LIGHT_SLEEP
-```
-
-### 状态
-
-```text
-ACTIVE
-POWER_SAVE
-LOW_BATTERY
-POWERING_OFF
-```
-
-### 规则
-
-```text
-BLE断开 + 空闲 >=45秒
- -> POWER_SAVE / 允许40MHz
-
-Battery <=3.4V
- -> LOW_BATTERY
-
-长按2秒
-Battery <=3.3V
-BLE断开且空闲 >=5分钟
- -> POWERING_OFF -> Deep Sleep
-```
-
-### Light Sleep
-
-不再照搬旧 Arduino 的手工：
-
-```cpp
-esp_light_sleep_start();
-```
-
-原因：手工 Light Sleep 无法维持 BLE。
-
-改为 ESP-IDF 官方模式：
-
-```text
-Bluetooth Modem Sleep
-+
+DFS 80MHz ↔ 40MHz
+PM Lock
 FreeRTOS Tickless Idle
-+
+BLE Modem Sleep
 Automatic Light Sleep
-```
-
-Audio / Photo 活动时持有 No-Light-Sleep Lock。
-
-### Deep Sleep
-
-进入前依次：
-
-```text
-清 Audio Queue
-取消 Photo / 释放 framebuffer
-停止 Mic / I2S
-释放 Opus
-Camera deinit
-Battery ADC deinit
-NimBLE stop / deinit
-LED OFF
 Deep Sleep
 ```
 
-唤醒：
+Deep Sleep 条件：
 
-```text
-GPIO1 LOW
-```
+- 2 秒长按；
+- Battery <= 3.3V；
+- BLE 未连接且空闲 >= 5 分钟。
 
-使用 ESP-IDF v6.1：
-
-```cpp
-esp_sleep_enable_ext1_wakeup_io(..., ESP_EXT1_WAKEUP_ANY_LOW);
-```
-
-长按关机时会等待用户先松开 GPIO1，再真正进入 Deep Sleep，避免“刚睡就立即被仍按住的按钮唤醒”。
+GPIO1 低电平唤醒。
 
 详细：`PHASE9_POWER_MANAGEMENT.md`
 
 ---
 
-## 当前验证边界
+## Phase 10：Wi-Fi / HTTPS OTA
 
-目前聊天模式已经直接把 Phase 0～9 的代码写入 GitHub，但没有连接真实 XIAO ESP32S3 Sense。
+### BLE 协议保持不变
 
-GitHub connector 当前也没有返回该分支的 Actions run，因此只声明：
+命令：
 
-> **Phase 0～9 代码迁移完成。**
-
-尚未声明：
-
-- ESP-IDF v6.1 `idf.py build` 已通过
-- 固件已成功烧录
-- BLE GATT / Audio / Photo 已手机实测
-- ADC 已和万用表核对
-- 80/40MHz DFS 已真机验证
-- Automatic Light Sleep 电流已测量
-- GPIO1 Deep Sleep 唤醒已验证
-- Low / Critical Battery 策略已真机验证
-
-本地验证：
-
-```bash
-cd omiGlass/esp32
-idf.py set-target esp32s3
-idf.py build
-idf.py -p <PORT> flash monitor
+```text
+0x01 SET_WIFI
+0x02 START_OTA
+0x03 CANCEL_OTA
+0x04 GET_STATUS
+0x05 SET_URL
 ```
+
+状态仍使用原 Omi `0x00 / 0x10...0x40 / 0xFF` 定义。
+
+### Native ESP-IDF 实现
+
+```text
+esp_wifi
+esp_netif
+esp_event
+esp_http_client
+esp_https_ota
+app_update
+ESP x509 Certificate Bundle
+```
+
+### 安全变化
+
+- HTTPS only；
+- 删除 `setInsecure()`；
+- 校验服务器证书；
+- 校验 hostname；
+- Wi-Fi credentials 仅 RAM；
+- Password 不写日志；
+- 完整 OTA URL 不写日志；
+- 镜像不完整时不切换 boot partition。
+
+### OTA Maintenance Mode
+
+OTA 期间暂停：
+
+```text
+Mic
+Opus realtime processing
+BLE Audio TX
+Photo Capture / Upload
+```
+
+保留：
+
+```text
+BLE OTA Control / Status
+Wi-Fi HTTPS OTA
+Battery
+Power coordination
+```
+
+OTA 写 Flash 时遇到长按或 Critical Battery：
+
+```text
+cancel OTA first
+ ↓
+wait task exits safely
+ ↓
+then Deep Sleep
+```
+
+详细：
+
+- `PHASE10_HTTPS_OTA.md`
+- `PHASE10_CI_VALIDATION.md`
 
 ---
 
-## 下一步：Phase 10
+## ESP-IDF v6.1 CI 验证
 
-迁移 OTA：
+官方构建环境：
 
 ```text
-BLE OTA Control
- ↓
-Wi-Fi credentials / URL
- ↓
-esp_wifi
- ↓
-esp_http_client / esp_https_ota
- ↓
-esp_ota_ops
- ↓
-OTA partition
- ↓
-reboot
+espressif/idf:v6.1
 ```
 
-重点：
+真实执行：
 
-- 保持现有 OTA BLE command 协议
-- 去掉 Arduino `WiFi.h / HTTPClient.h / Update.h`
-- 不再使用 `setInsecure()`
-- 使用 ESP-IDF 证书校验 / cert bundle
-- OTA 期间通过 PM Lock 保持性能并禁止 Light Sleep
+```bash
+idf.py set-target esp32s3
+idf.py build
+```
+
+结果：
+
+```text
+SUCCESS
+```
+
+第一轮真实编译发现并已修复：
+
+1. `ble_hs_util_ensure_addr()` 需要显式 `host/util/util.h`；
+2. `uint32_t` 设备序列号使用 `%X` 被 `-Werror=format` 拒绝，已改用 `PRIX32`。
+
+### 固件大小
+
+```text
+Firmware        1,560,080 bytes
+OTA Slot        1,835,008 bytes
+Margin            274,928 bytes
+Usage                  85%
+```
+
+因此当前仍保持原双 `0x1C0000` OTA App Slot，不在 Phase 10 修改分区布局。
+
+85% 使用率已列为 Phase 11/12 的持续监控项。
+
+CI 现在还会：
+
+- 失败时生成 compiler error annotations；
+- 成功时报告 firmware/slot/margin/usage；
+- 同一分支自动取消过期构建。
+
+---
+
+## 当前验证边界
+
+### 已确认
+
+- Native 工程能在 ESP-IDF v6.1 完整编译；
+- 当前 binary 能放入现有 OTA Slot；
+- Phase 0～10 的 C/C++ / CMake / Kconfig 已进入真实 CI 编译闭环。
+
+### 仍待真机
+
+- Boot / PSRAM；
+- Button / LED；
+- PDM Mic；
+- Opus 实时链路；
+- BLE 手机连接；
+- Audio Notify；
+- Camera；
+- Photo BLE 重组；
+- Battery ADC 与万用表对比；
+- Automatic Light Sleep / DFS；
+- Deep Sleep / GPIO1 wake；
+- Wi-Fi + BLE coexistence；
+- HTTPS server certificate validation；
+- OTA 正常升级；
+- OTA cancel / failure / low battery / long-press safety。
+
+---
+
+## 下一步：Phase 11 整机功能对齐
+
+Phase 11 不再增加大块新功能，重点是把 Arduino 与 Native ESP-IDF 两套行为逐项核对：
+
+1. BLE UUID / Properties / packet wire format；
+2. Audio codec / timing / queue；
+3. Camera / Photo protocol；
+4. Battery；
+5. Button / LED；
+6. Power state；
+7. OTA command / status；
+8. Boot / disconnect / reconnect；
+9. 错误恢复；
+10. binary size / OTA slot margin。
+
+之后再进入 Phase 12 架构优化。
 
 ---
 
@@ -397,15 +447,16 @@ reboot
 
 除非后续显式修改并记录：
 
-- ESP-IDF 固定 v6.1.x
-- XIAO ESP32S3 Sense
-- BLE Device Name：`OMI Glass`
-- Omi BLE UUID 不变
-- Audio Codec ID：21
-- 16kHz Mono
-- Opus 320 samples / 20ms
-- Audio BLE 包格式不变
-- Camera：VGA JPEG
-- Photo BLE 分包格式不变
-- Battery Service：`0x180F / 0x2A19`
-- Arduino `omiGlass/firmware/` 保持不动
+- ESP-IDF 固定 v6.1.x；
+- XIAO ESP32S3 Sense；
+- BLE Device Name：`OMI Glass`；
+- Omi BLE UUID 不变；
+- Audio Codec ID：21；
+- 16kHz Mono；
+- Opus 320 samples / 20ms；
+- Audio BLE 包格式不变；
+- Camera：VGA JPEG；
+- Photo BLE 分包格式不变；
+- Battery Service：`0x180F / 0x2A19`；
+- OTA BLE Command / Status wire protocol 不变；
+- Arduino `omiGlass/firmware/` 保持不动。
