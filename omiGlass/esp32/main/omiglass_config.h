@@ -151,6 +151,22 @@ static_assert(
     "Configured BLE MTU must fit one complete Omi photo notification");
 
 // =============================================================================
-// 后续阶段会继续使用的硬件参数
+// Battery ADC 配置
+// 保持原 Arduino 固件的 GPIO、分压参数、采样次数和检测周期。
 // =============================================================================
 constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
+constexpr float OMI_BATTERY_VOLTAGE_DIVIDER_RATIO = 6.086f;
+constexpr float OMI_BATTERY_MAX_VOLTAGE = 4.2f;
+constexpr float OMI_BATTERY_MIN_VOLTAGE = 3.2f;
+constexpr float OMI_BATTERY_CRITICAL_VOLTAGE = 3.3f;
+constexpr float OMI_BATTERY_LOW_VOLTAGE = 3.4f;
+
+// 原固件每 20 秒做一次内部检测；单次检测连续读取 10 次，每次间隔 10ms。
+constexpr uint32_t OMI_BATTERY_CHECK_INTERVAL_MS = 20000;
+constexpr uint32_t OMI_BATTERY_REPORT_INTERVAL_MS = 90000;
+constexpr size_t OMI_BATTERY_SAMPLE_COUNT = 10;
+constexpr uint32_t OMI_BATTERY_SAMPLE_DELAY_MS = 10;
+
+// 对最终电池电压做合理范围保护，保持原固件行为。
+constexpr float OMI_BATTERY_VOLTAGE_CLAMP_MIN = 2.5f;
+constexpr float OMI_BATTERY_VOLTAGE_CLAMP_MAX = 5.0f;
