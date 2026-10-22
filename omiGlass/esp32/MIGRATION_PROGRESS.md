@@ -29,7 +29,7 @@
 | Phase 8 | Battery ADC | ✅ 已迁移 / CI 编译通过 |
 | Phase 9 | Power Management | ✅ 已迁移 / CI 编译通过 |
 | Phase 10 | Wi-Fi / HTTPS OTA | ✅ **已迁移 / ESP-IDF v6.1 CI 编译通过** |
-| Phase 11 | 整机功能对齐 | ⬜ 下一阶段 |
+| Phase 11 | 整机功能对齐 | 🚧 **IN PROGRESS：源码审计 + parity CI + 真机验证矩阵** |
 | Phase 12 | 架构优化 | ⬜ 未开始 |
 
 > “CI 编译通过”只表示源码已经在官方 ESP-IDF v6.1 环境中成功构建，不等于真机硬件和手机端联调已经通过。
@@ -349,6 +349,84 @@ then Deep Sleep
 
 ---
 
+## Phase 11：整机功能对齐（IN PROGRESS）
+
+Phase 11 不再扩展大块业务功能，而是把 Arduino 基线与 Native ESP-IDF 的外部行为逐项核对并固化。
+
+当前已经建立：
+
+```text
+PHASE11_SYSTEM_PARITY.md
+        ↓
+Arduino vs Native 对齐矩阵
+        ↓
+MATCH / INTENTIONAL CHANGE / FIXED / NEED HW TEST / WATCH
+```
+
+CI 在正式 `idf.py build` 前会运行：
+
+```bash
+python3 tools/check_phase11_parity.py
+python3 tools/check_phase11_wire_behavior.py
+```
+
+自动保护：
+
+- Device Info / GPIO / Mic / Opus / Battery / OTA 关键常量；
+- Omi / Audio / Photo / OTA UUID；
+- Audio `index LE + sub-index + Opus`；
+- Photo 首包 199B / 后续 200B / 最大 202B / `FF FF`；
+- OTA Control READ `[status,0]`；
+- OTA Data READ/NOTIFY `[status,progress]`；
+- Arduino `app.cpp` 的真实 Audio/Photo 字节行为基线。
+
+已经发现并修复：
+
+```text
+P11-001
+OTA Control READ
+Native 原先返回 [status, progress]
+修复为 Arduino 实际行为 [status, 0]
+```
+
+已经明确保留的有意差异包括：
+
+- Audio 队列满时 Native 丢最旧帧，优先实时性；
+- 未订阅 Audio 时不积压旧音频；
+- Photo 未订阅时不抓图；
+- Notify / MTU 失败不把数据当成已成功发送；
+- Native 使用真正的 200～400ms Advertising interval；
+- 连接后主动请求 25～50ms connection interval；
+- Battery 使用 ADC Curve Fitting（需真机与万用表裁决）；
+- 自动 Light Sleep / 5min Offline Deep Sleep / Critical Battery Shutdown；
+- OTA 强制 HTTPS + X.509 校验。
+
+真机辅助脚本：
+
+```bash
+python3 -m pip install -r tools/requirements-phase11.txt
+python3 tools/phase11_ble_probe.py
+python3 tools/phase11_ble_probe.py --audio-seconds 60
+python3 tools/phase11_ble_probe.py --photo
+```
+
+当前必须真机裁决的重点：
+
+1. PDM 16kHz / Mic gain / DMA 稳定性；
+2. 60s Opus + BLE Audio 连续性；
+3. VGA JPEG 完整重组；
+4. Battery ADC Curve Fitting 与万用表偏差；
+5. BLE MTU / reconnect / connection params；
+6. Automatic Light Sleep / DFS / Deep Sleep / GPIO1 wake；
+7. Wi-Fi + BLE coexistence；
+8. HTTPS OTA 正常、失败、cancel、低电和长按安全路径。
+
+详细：`PHASE11_SYSTEM_PARITY.md`
+
+Phase 11 在真机矩阵完成前保持 **IN PROGRESS**，不会仅凭 CI 编译成功标记为 COMPLETE。
+
+---
+
 ## ESP-IDF v6.1 CI 验证
 
 官方构建环境：
@@ -384,12 +462,13 @@ Margin            274,928 bytes
 Usage                  85%
 ```
 
-因此当前仍保持原双 `0x1C0000` OTA App Slot，不在 Phase 10 修改分区布局。
+因此当前仍保持原双 `0x1C0000` OTA App Slot，不在 Phase 10/11 修改分区布局。
 
 85% 使用率已列为 Phase 11/12 的持续监控项。
 
 CI 现在还会：
 
+- Phase 11 parity/wire checker；
 - 失败时生成 compiler error annotations；
 - 成功时报告 firmware/slot/margin/usage；
 - 同一分支自动取消过期构建。
@@ -402,7 +481,8 @@ CI 现在还会：
 
 - Native 工程能在 ESP-IDF v6.1 完整编译；
 - 当前 binary 能放入现有 OTA Slot；
-- Phase 0～10 的 C/C++ / CMake / Kconfig 已进入真实 CI 编译闭环。
+- Phase 0～10 的 C/C++ / CMake / Kconfig 已进入真实 CI 编译闭环；
+- Phase 11 的关键常量和手机端线协议已经进入自动 parity CI 保护。
 
 ### 仍待真机
 
@@ -424,25 +504,6 @@ CI 现在还会：
 
 ---
 
-## 下一步：Phase 11 整机功能对齐
-
-Phase 11 不再增加大块新功能，重点是把 Arduino 与 Native ESP-IDF 两套行为逐项核对：
-
-1. BLE UUID / Properties / packet wire format；
-2. Audio codec / timing / queue；
-3. Camera / Photo protocol；
-4. Battery；
-5. Button / LED；
-6. Power state；
-7. OTA command / status；
-8. Boot / disconnect / reconnect；
-9. 错误恢复；
-10. binary size / OTA slot margin。
-
-之后再进入 Phase 12 架构优化。
-
----
-
 ## 固定兼容性约束
 
 除非后续显式修改并记录：
@@ -460,3 +521,21 @@ Phase 11 不再增加大块新功能，重点是把 Arduino 与 Native ESP-IDF �
 - Battery Service：`0x180F / 0x2A19`；
 - OTA BLE Command / Status wire protocol 不变；
 - Arduino `omiGlass/firmware/` 保持不动。
+
+---
+
+## 下一步
+
+Phase 11 当前重点不是继续拆组件，而是完成：
+
+```text
+源码行为审计
+  +
+CI 契约保护
+  +
+Host BLE probe
+  +
+真机验证矩阵
+```
+
+全部收口后，再进入 Phase 12 架构优化。
