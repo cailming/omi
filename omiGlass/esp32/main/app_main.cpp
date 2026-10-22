@@ -1,6 +1,7 @@
 #include "audio_tx_service.h"
 #include "ble_service.h"
 #include "board_service.h"
+#include "camera_service.h"
 #include "mic_service.h"
 #include "omiglass_config.h"
 #include "opus_service.h"
@@ -139,7 +140,7 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Phase 1 基础板级服务已启动");
 
     // 初始化 ESP-IDF 原生 NimBLE GATT Server。
-    // BLE 初始化失败不会阻止 Mic / Opus 继续启动，便于各阶段独立诊断。
+    // BLE 初始化失败不会阻止其他模块继续启动，便于各阶段独立诊断。
     const esp_err_t ble_err = ble_service_init(board_device_serial());
     if (ble_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 4 BLE Core 已启动");
@@ -153,6 +154,14 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "Phase 5 BLE Audio TX 已启动，等待手机订阅 Audio Data Notify");
     } else {
         ESP_LOGE(TAG, "BLE Audio TX 初始化失败: %s", esp_err_to_name(tx_err));
+    }
+
+    // Phase 6：初始化 Camera。本阶段只获取 JPEG framebuffer，不发送照片 BLE。
+    const esp_err_t camera_err = camera_service_init();
+    if (camera_err == ESP_OK) {
+        ESP_LOGI(TAG, "Phase 6 Camera 已启动；当前只做 JPEG capture/release 验证");
+    } else {
+        ESP_LOGE(TAG, "Camera 初始化失败: %s", esp_err_to_name(camera_err));
     }
 
     // 先初始化 Opus，再启动麦克风。这样第一批 PCM 到达时就可以直接进入编码环形缓冲区。
@@ -171,11 +180,14 @@ extern "C" void app_main(void)
     if (mic_err == ESP_OK) {
         ESP_LOGI(TAG, "Phase 2 PDM 麦克风已启动，等待 PCM 数据");
     } else {
-        // 麦克风失败时不让整个固件退出，仍保留按键、LED 和 BLE，方便现场诊断。
+        // 麦克风失败时不让整个固件退出，仍保留按键、LED、BLE 和 Camera，方便现场诊断。
         ESP_LOGE(TAG, "PDM 麦克风启动失败: %s", esp_err_to_name(mic_err));
     }
 
     uint64_t last_audio_report_ms = board_millis();
+
+    // 原 Arduino 固件默认 lastCaptureTime = now - 30s，因此连接后第一轮即可拍一张。
+    uint64_t last_camera_capture_ms = board_millis() - OMI_CAMERA_CAPTURE_INTERVAL_MS;
 
     while (true) {
         // BLE Host 自己运行在 NimBLE FreeRTOS Task 中，主循环只同步连接状态给 LED。
@@ -192,8 +204,33 @@ extern "C" void app_main(void)
             opus_service_process();
         }
 
-        // Opus 回调会把新帧写入队列，这里负责按节奏真正执行 BLE notify。
+        // 音频发送始终放在 Camera 之前，保持原项目“Audio 优先于 Photo”的调度原则。
         audio_tx_service_process();
+
+        const uint64_t now_ms = board_millis();
+
+        // Phase 6 暂时保持原固件“连接后默认每 30 秒拍照”的行为，
+        // 但拍到的 JPEG 只做日志验证并立即归还，不进入 Photo Data BLE。
+        if (camera_service_is_ready() && ble_service_is_connected() &&
+            now_ms - last_camera_capture_ms >= OMI_CAMERA_CAPTURE_INTERVAL_MS) {
+            CameraFrameView frame{};
+            const esp_err_t capture_err = camera_service_capture(&frame);
+            if (capture_err == ESP_OK) {
+                ESP_LOGI(
+                    TAG,
+                    "Phase 6 Camera 验证：JPEG=%u bytes，%ux%u，方向=%u",
+                    static_cast<unsigned>(frame.len),
+                    static_cast<unsigned>(frame.width),
+                    static_cast<unsigned>(frame.height),
+                    static_cast<unsigned>(frame.orientation));
+                camera_service_release_frame();
+            } else {
+                ESP_LOGW(TAG, "Camera capture 失败: %s", esp_err_to_name(capture_err));
+            }
+
+            // 无论本次成功与否都等待下一个周期，避免硬件异常时每 1ms 重试刷屏。
+            last_camera_capture_ms = now_ms;
+        }
 
         const BoardButtonEvent event = board_service_take_button_event();
         if (event == BoardButtonEvent::SHORT_PRESS) {
@@ -204,7 +241,6 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "收到长按事件，等待后续电源管理模块处理");
         }
 
-        const uint64_t now_ms = board_millis();
         report_audio_status_if_needed(now_ms, last_audio_report_ms);
 
         // I2S 读取本身会等待一帧；这里再短暂让出 CPU，避免异常情况下空转。
