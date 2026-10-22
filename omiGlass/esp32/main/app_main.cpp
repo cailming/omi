@@ -1,3 +1,4 @@
+#include "audio_tx_service.h"
 #include "ble_service.h"
 #include "board_service.h"
 #include "mic_service.h"
@@ -52,13 +53,15 @@ void on_opus_encoded(const uint8_t *data, size_t len)
         return;
     }
 
-    // Phase 4 明确不发送实时音频。
-    // Phase 5 才会把这里的 Opus 帧写入 BLE 音频发送队列并执行 notify。
     ++s_opus_frames_since_report;
     s_opus_bytes_since_report += len;
     if (len > s_opus_max_frame_bytes) {
         s_opus_max_frame_bytes = len;
     }
+
+    // Phase 5：编码完成后将 Opus 帧交给 BLE 音频发送队列。
+    // 未连接或手机没有订阅 Audio Data 时，发送服务会直接跳过本帧，不缓存陈旧语音。
+    audio_tx_service_enqueue(data, len);
 }
 
 void report_audio_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
@@ -86,6 +89,23 @@ void report_audio_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
             static_cast<unsigned long long>(s_opus_bytes_since_report),
             static_cast<unsigned long long>(average_frame_bytes),
             static_cast<unsigned>(s_opus_max_frame_bytes));
+    }
+
+    const AudioTxStats tx_stats = audio_tx_service_take_stats();
+    if (ble_service_is_connected() || tx_stats.enqueued_frames > 0 || tx_stats.sent_frames > 0 ||
+        tx_stats.dropped_queue_full > 0 || tx_stats.dropped_mtu_too_small > 0 || tx_stats.notify_errors > 0) {
+        ESP_LOGI(
+            TAG,
+            "BLE Audio：订阅=%s MTU=%u 入队=%lu 发送=%lu 未就绪跳过=%lu 队列满丢帧=%lu MTU丢帧=%lu notify错误=%lu 当前队列=%u",
+            ble_service_audio_subscribed() ? "是" : "否",
+            ble_service_mtu(),
+            static_cast<unsigned long>(tx_stats.enqueued_frames),
+            static_cast<unsigned long>(tx_stats.sent_frames),
+            static_cast<unsigned long>(tx_stats.dropped_not_ready),
+            static_cast<unsigned long>(tx_stats.dropped_queue_full),
+            static_cast<unsigned long>(tx_stats.dropped_mtu_too_small),
+            static_cast<unsigned long>(tx_stats.notify_errors),
+            static_cast<unsigned>(tx_stats.queue_depth));
     }
 
     s_mic_samples_since_report = 0;
@@ -118,13 +138,21 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "设备序列号: %s", board_device_serial());
     ESP_LOGI(TAG, "Phase 1 基础板级服务已启动");
 
-    // Phase 4：初始化 ESP-IDF 原生 NimBLE GATT Server。
+    // 初始化 ESP-IDF 原生 NimBLE GATT Server。
     // BLE 初始化失败不会阻止 Mic / Opus 继续启动，便于各阶段独立诊断。
     const esp_err_t ble_err = ble_service_init(board_device_serial());
     if (ble_err == ESP_OK) {
-        ESP_LOGI(TAG, "Phase 4 BLE Core 已启动；本阶段不发送实时音频");
+        ESP_LOGI(TAG, "Phase 4 BLE Core 已启动");
     } else {
         ESP_LOGE(TAG, "BLE Core 初始化失败: %s", esp_err_to_name(ble_err));
+    }
+
+    // Phase 5：初始化实时音频发送队列。
+    const esp_err_t tx_err = audio_tx_service_init();
+    if (tx_err == ESP_OK) {
+        ESP_LOGI(TAG, "Phase 5 BLE Audio TX 已启动，等待手机订阅 Audio Data Notify");
+    } else {
+        ESP_LOGE(TAG, "BLE Audio TX 初始化失败: %s", esp_err_to_name(tx_err));
     }
 
     // 先初始化 Opus，再启动麦克风。这样第一批 PCM 到达时就可以直接进入编码环形缓冲区。
@@ -163,6 +191,9 @@ extern "C" void app_main(void)
             // 与原 Arduino 固件一致：采集和编码分成两个步骤，中间通过 PCM 环形缓冲解耦。
             opus_service_process();
         }
+
+        // Opus 回调会把新帧写入队列，这里负责按节奏真正执行 BLE notify。
+        audio_tx_service_process();
 
         const BoardButtonEvent event = board_service_take_button_event();
         if (event == BoardButtonEvent::SHORT_PRESS) {
