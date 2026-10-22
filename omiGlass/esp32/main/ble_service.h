@@ -5,6 +5,10 @@
 
 #include "esp_err.h"
 
+// ESP-IDF v6.1 将 ble_hs_util_ensure_addr() 的声明放在 host/util/util.h，
+// 不能只依赖 host/ble_hs.h 的间接包含关系。
+#include "host/util/util.h"
+
 // OTA Control 写命令回调。
 // BLE 层只负责传递原始协议字节，不依赖 Wi-Fi / HTTPS OTA 的具体实现。
 using BleOtaCommandHandler = void (*)(const uint8_t *data, size_t len);
