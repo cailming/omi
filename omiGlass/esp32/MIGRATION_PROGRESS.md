@@ -2,7 +2,7 @@
 
 分支：`feature/omiglass-esp-idf-migration`
 
-最后更新：2026-10-21
+最后更新：2026-10-22
 
 ## 固定开发基线
 
@@ -12,22 +12,25 @@
 - 硬件：Seeed Studio XIAO ESP32S3 Sense
 - 原 Arduino 固件：`omiGlass/firmware/`，迁移期间保持不动
 - 当前 Opus 组件：`78/esp-opus 1.0.5`
+- 新增代码说明性注释统一使用中文
 
 ## 总体状态
 
-- Phase 0：代码完成，待 CI / 真机验证
-- Phase 1：代码完成，待 GPIO/LED/Button 真机验证
-- Phase 2：代码完成，待 PDM Mic 真机验证
-- Phase 3：代码完成，待 ESP-IDF v6.1 + Opus 编译/真机验证
-- Phase 4：**代码迁移完成，待 CI 编译与手机 GATT 验证**
-- Phase 5：未开始
-- Phase 6：未开始
-- Phase 7：未开始
-- Phase 8：未开始
-- Phase 9：未开始
-- Phase 10：未开始
-- Phase 11：未开始
-- Phase 12：未开始
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| Phase 0 | ESP-IDF 工程骨架 | 代码完成，待编译/真机验证 |
+| Phase 1 | Board / GPIO / LED / Button | 代码完成，待硬件验证 |
+| Phase 2 | PDM Mic | 代码完成，待硬件验证 |
+| Phase 3 | Opus Encoder | 代码完成，待 v6.1 编译/真机验证 |
+| Phase 4 | Native NimBLE / GATT | 代码完成，待手机 GATT 验证 |
+| Phase 5 | BLE Audio TX | **代码完成，待手机实时音频验证** |
+| Phase 6 | Camera | 未开始 |
+| Phase 7 | Photo BLE | 未开始 |
+| Phase 8 | Battery ADC | 未开始 |
+| Phase 9 | Power | 未开始 |
+| Phase 10 | OTA | 未开始 |
+| Phase 11 | 整机功能对齐 | 未开始 |
+| Phase 12 | FreeRTOS / Component 架构优化 | 未开始 |
 
 ---
 
@@ -35,11 +38,14 @@
 
 已完成：
 
-- `omiGlass/esp32/` 原生 ESP-IDF 工程
-- ESP32-S3 / 8MB Flash / Octal PSRAM
-- OTA 分区表迁移
-- `app_main()` 入口
-- 迁移计划与进度文件
+- `omiGlass/esp32/` 原生 ESP-IDF 工程。
+- ESP32-S3 / 8MB Flash / Octal PSRAM 基础配置。
+- OTA 分区表按 Arduino 版本迁移。
+- 使用 `app_main()` 作为程序入口。
+- `main/idf_component.yml` 固定 ESP-IDF `>=6.1,<6.2`。
+- GitHub Actions 增加 `omiglass-esp-idf.yml`，目标使用官方 ESP-IDF v6.1 环境执行构建。
+
+当前 GitHub 连接器尚未返回该 workflow 的实际运行结果，因此不能声明 CI 已通过。
 
 ---
 
@@ -47,43 +53,61 @@
 
 已迁移：
 
-- GPIO1 电源按键
-- GPIO21 状态 LED
-- 50ms 去抖
-- 2 秒长按识别
-- `millis()` -> `esp_timer_get_time()`
-- `delay()` -> `vTaskDelay()`
-- `Serial.*` -> `ESP_LOGx`
-- `ESP.getEfuseMac()` -> `esp_efuse_mac_get_default()`
+```text
+GPIO1   电源按键，内部上拉，低电平按下
+GPIO21  状态 LED，LOW=亮，HIGH=灭
+```
+
+Arduino API 替换：
+
+```text
+pinMode()          -> gpio_config()
+digitalRead()      -> gpio_get_level()
+digitalWrite()     -> gpio_set_level()
+attachInterrupt()  -> GPIO ISR Service
+millis()           -> esp_timer_get_time()
+delay()            -> vTaskDelay()
+Serial.*           -> ESP_LOGx
+ESP.getEfuseMac()  -> esp_efuse_mac_get_default()
+```
 
 保留：
 
-- 按键低电平有效
-- LED 反相：LOW=亮，HIGH=灭
-- 启动闪灯序列
-- 设备序列号尽量兼容 Arduino 版本
+- 50ms 去抖。
+- 2 秒长按识别。
+- 启动 LED 闪烁。
+- 原设备序列号生成语义。
 
 ---
 
 ## Phase 2：PDM 麦克风
 
-已迁移为 ESP-IDF v6.1 原生 PDM RX Channel API：
+原 Arduino legacy I2S 已迁移到 ESP-IDF v6.1 Channel API：
 
 ```text
-GPIO42 CLK
-GPIO41 DATA
-16kHz / Mono / PCM16
-320 samples / 20ms 每次读取
+GPIO42 PDM CLK
+GPIO41 PDM DATA
+16kHz
+Mono
+PCM16
 ```
 
-数据链：
+调用链：
 
 ```text
-PDM Mic
+i2s_new_channel()
+  ↓
+i2s_channel_init_pdm_rx_mode()
+  ↓
+i2s_channel_enable()
   ↓
 i2s_channel_read()
-  ↓
-PCM callback
+```
+
+当前每次读取：
+
+```text
+320 samples = 20ms
 ```
 
 真机目标：约 `16000 samples/s`。
@@ -92,22 +116,23 @@ PCM callback
 
 ## Phase 3：Opus Encoder
 
-已完成：
+新增：
 
-- `main/idf_component.yml`
 - `main/opus_service.h/.cpp`
 - `PHASE3_OPUS.md`
 
-参数保持：
+参数保持 Arduino 版本：
 
-- 16kHz
-- Mono
-- 320 samples / 20ms
-- 32kbps
-- Complexity 3
-- VBR ON
-- Codec ID 21
-- 最大 160 bytes/frame
+```text
+16kHz
+Mono
+320 samples / 20ms
+32kbps
+Complexity 3
+VBR ON
+Codec ID 21
+Max 160 bytes/frame
+```
 
 数据链：
 
@@ -123,212 +148,185 @@ opus_encode()
 encoded callback
 ```
 
-Phase 3 仍然不发送 BLE。
-
 ---
 
 ## Phase 4：Native NimBLE / GATT
 
 新增：
 
-- `main/ble_service.h`
-- `main/ble_service.cpp`
+- `main/ble_service.h/.cpp`
 - `PHASE4_BLE_CORE.md`
-- `.github/workflows/omiglass-esp-idf.yml`
 
-CMake 已加入：
+已迁移：
 
-- `bt`
-- `nvs_flash`
+- NimBLE Host。
+- Peripheral / Broadcaster。
+- Advertising / Scan Response。
+- Connect / Disconnect。
+- ATT MTU。
+- Connection Parameters。
+- CCCD / Subscribe 状态。
+- Omi Main Service。
+- Battery Service。
+- Device Information Service。
+- OTA Service。
 
-`sdkconfig.defaults` 已启用：
-
-- NimBLE
-- Peripheral role
-- Broadcaster role
-- GATT Server
-- GAP Service
-- 最大连接数 1
-- Preferred ATT MTU 517
-
-并关闭当前眼镜固件不需要的：
-
-- Central role
-- Observer role
-- GATT Client
-
-### 已迁移的 BLE Core
-
-- `nimble_port_init()`
-- NimBLE Host FreeRTOS Task
-- GAP Device Name
-- Advertising
-- Scan Response
-- Connect / Disconnect
-- MTU Event
-- Connection Parameters
-- CCCD / Subscribe Event
-- GATT Server
-
-### GATT 结构
-
-#### Omi Main Service
-
-`19B10000-E8F2-537E-4F6C-D104768A1214`
-
-- Audio Data：Read + Notify
-- Audio Codec：Read，返回 Codec ID 21
-- Photo Data：Read + Notify
-- Photo Control：Write
-
-#### Battery Service
-
-- `0x180F`
-- Battery Level `0x2A19`：Read + Notify
-- Phase 8 前返回占位值 0
-
-#### Device Information Service
-
-- `0x180A`
-- Manufacturer Name
-- Model Number
-- Firmware Revision
-- Hardware Revision
-- Serial Number
-
-设备序列号由 `app_main()` 调用 `board_device_serial()` 后传给：
-
-```cpp
-ble_service_init(board_device_serial());
-```
-
-这样 BLE 层不反向依赖板级序列号生成逻辑。
-
-#### OTA Service
-
-`19B10010-E8F2-537E-4F6C-D104768A1214`
-
-- OTA Control：Read + Write
-- OTA Data：Read + Notify
-- Phase 10 前只保留协议入口，不执行真实 OTA
-
-### 广播
-
-保持原 Arduino 设计意图：
+GATT 主要结构保持：
 
 ```text
-Advertising Data:
-  Omi Main Service 128-bit UUID
+Omi Main Service
+  Audio Data     READ + NOTIFY
+  Audio Codec    READ
+  Photo Data     READ + NOTIFY
+  Photo Control  WRITE
 
-Scan Response:
-  OMI Glass
+Battery Service
+Device Information Service
+OTA Service
 ```
 
-广播间隔：
-
-- 200ms minimum
-- 400ms maximum
-
-### 连接参数
-
-- Preferred ATT MTU：517
-- Connection Interval：25~50ms
-- Latency：0
-- Supervision Timeout：8s
-
-### Phase 4 明确不做的事情
-
-`on_opus_encoded()` 当前仍只做统计，不会进入 BLE notify。
-
-因此当前链路是：
-
-```text
-Mic
- ↓
-Opus
- ↓
-on_opus_encoded()
- ↓
-统计
-
-× 不发送 Audio Data Notify
-```
-
-Phase 5 才改成：
-
-```text
-Opus Frame
- ↓
-Audio TX Ring Buffer
- ↓
-3-byte header
- ↓
-Audio Data Notify
-```
-
-### Phase 4 真机验证目标
-
-1. 手机扫描到 `OMI Glass`
-2. 能成功连接
-3. GATT 服务/Characteristic 与 Arduino 版本一致
-4. Audio Codec 读取 `0x15`
-5. Audio Data / Photo Data / Battery / OTA Data 可订阅
-6. Photo Control 写命令可在串口看到
-7. OTA Control 写命令可在串口看到，但不会执行 OTA
-8. Device Information 可读取
-9. ATT MTU 协商正常
-10. 断开后自动恢复广播
-11. BLE 连接状态能驱动 LED 状态
-12. Mic / Opus 保持运行，但无实时 Audio notify 流量
-
-详细内容见：`PHASE4_BLE_CORE.md`
+Preferred ATT MTU：517。
 
 ---
 
-## GitHub Actions 编译验证
+## Phase 5：BLE 实时音频发送
 
 新增：
 
+- `main/audio_tx_service.h`
+- `main/audio_tx_service.cpp`
+- `PHASE5_BLE_AUDIO.md`
+
+BLE Core 新增：
+
+```cpp
+esp_err_t ble_service_notify_audio(const uint8_t *packet, size_t len);
+```
+
+BLE 层现在保存：
+
 ```text
-.github/workflows/omiglass-esp-idf.yml
+当前 connection handle
+Audio Data value handle
+Audio Data Notify 订阅状态
+当前 ATT MTU
 ```
 
-固定使用：
+### 手机端音频包格式保持不变
 
 ```text
-espressif/idf:v6.1
+byte 0-1：packet index，little-endian
+byte 2  ：sub-index = 0
+byte 3+ ：Opus payload
 ```
 
-自动执行：
+最大业务包：
 
-```bash
-cd omiGlass/esp32
-idf.py set-target esp32s3
-idf.py build
+```text
+3 + 160 = 163 bytes
 ```
 
-触发条件：
+ATT Notification 需要：
 
-- 向 `feature/omiglass-esp-idf-migration` push 且修改 `omiGlass/esp32/**`
-- Pull Request 修改 `omiGlass/esp32/**`
-- 手动 `workflow_dispatch`
+```text
+packet <= MTU - 3
+```
 
-这使后续迁移可以在 GitHub 上做真实 ESP-IDF v6.1 编译验证，而不再只依赖静态检查。
+因此最大 Opus 帧完整发送至少要求 MTU >= 166；项目目标 MTU 为 517。
+
+### Audio TX Queue
+
+队列容量：
+
+```text
+16 frames
+```
+
+即理论最大约：
+
+```text
+16 × 20ms = 320ms
+```
+
+实时策略：
+
+- 未连接：不缓存音频。
+- 未订阅 Audio Data Notify：不缓存音频。
+- 队列满：丢最旧帧，保留最新帧。
+- MTU 不足：丢当前旧帧，等待后续新帧。
+- notify 失败：不持续重试旧帧，优先实时性。
+- 每轮最多发送 2 帧，允许轻微追赶但避免一次塞满 BLE Host 队列。
+
+### 当前完整音频链
+
+```text
+PDM Mic
+  ↓
+PCM16 16kHz
+  ↓
+Opus 20ms frame
+  ↓
+on_opus_encoded()
+  ↓
+audio_tx_service_enqueue()
+  ↓
+16-frame TX Queue
+  ↓
+3-byte Omi Header
+  ↓
+ble_service_notify_audio()
+  ↓
+ble_hs_mbuf_from_flat()
+  ↓
+ble_gatts_notify_custom()
+  ↓
+手机
+```
+
+NimBLE 的 `ble_gatts_notify_custom()` 会消费传入的 mbuf，因此发送后不能再次手工释放。
+
+### 当前日志统计
+
+每约一秒输出：
+
+```text
+麦克风：samples / peak
+Opus：frames / bytes / avg / max
+BLE Audio：
+  subscribed
+  MTU
+  enqueued
+  sent
+  dropped_not_ready
+  dropped_queue_full
+  dropped_mtu_too_small
+  notify_errors
+  queue_depth
+```
+
+理想稳定状态：
+
+```text
+Mic samples/s       ≈ 16000
+Opus frames/s       ≈ 50
+BLE sent frames/s   ≈ 50
+queue depth         ≈ 0
+queue full drops    = 0
+MTU drops           = 0
+notify errors       = 0
+```
 
 ---
 
-## 当前 app_main 链路
+## 当前 app_main 数据链
 
 ```text
 app_main()
    │
    ├── board_service_init()
-   │
-   ├── ble_service_init(board_device_serial())
-   │      └── NimBLE Host Task
-   │
+   ├── ble_service_init(serial)
+   ├── audio_tx_service_init()
    ├── opus_service_init()
-   │
    ├── mic_service_start()
    │
    └── while(true)
@@ -336,36 +334,59 @@ app_main()
           ├── board_service_process()
           ├── mic_service_process()
           ├── opus_service_process()
+          │       ↓
+          │   on_opus_encoded()
+          │       ↓
+          │   audio TX queue
+          ├── audio_tx_service_process()
           ├── button event
-          └── audio statistics
+          └── runtime statistics
 ```
+
+---
+
+## Phase 5 真机验证清单
+
+1. 手机扫描到 `OMI Glass`。
+2. 能成功连接。
+3. Audio Codec 读取 `0x15`。
+4. 手机订阅 Audio Data Notify。
+5. MTU 协商到足够大小，目标 517。
+6. Mic 每秒约 16000 samples。
+7. Opus 每秒约 50 帧。
+8. BLE Audio 每秒约发送 50 帧。
+9. 手机收到的数据保持原有 3-byte header 格式。
+10. packet index 连续递增并按 little-endian 解析。
+11. sub-index 为 0。
+12. 手机端原有 Opus 解码逻辑无需改协议即可工作。
+13. 正常情况下 queue depth 长期接近 0。
+14. queue full drops 不持续增长。
+15. MTU drops 不持续增长。
+16. notify errors 不持续增长。
+17. 关闭 Notify 后不积压旧音频。
+18. 重新开启 Notify 后从当前实时声音开始。
+19. BLE 断开后待发音频队列清空。
+20. 重连重新订阅后可恢复音频发送。
 
 ---
 
 ## 当前验证边界
 
-当前聊天模式已经能够：
+当前聊天模式可以直接读写 GitHub，但没有直接连接：
 
-- 通过 GitHub 读取原 Arduino 固件
-- 创建迁移分支
-- 逐文件提交 ESP-IDF 代码
-- 写迁移文档和进度
-- 创建 GitHub Actions ESP-IDF v6.1 编译工作流
+- 本地 ESP-IDF v6.1 编译器。
+- XIAO ESP32S3 Sense 真机。
+- 手机 BLE 调试环境。
 
-当前仍不能直接完成：
+因此当前准确状态是：
 
-- XIAO ESP32S3 真机烧录
-- 手机实际连接 GATT
-- 麦克风真实波形验证
-- BLE 射频/吞吐/长期稳定性验证
+> **Phase 0～5 的迁移代码已经完成。**
 
-因此目前只声明：
+尚不能声明：
 
-> **Phase 0~4 代码迁移已完成。**
+> `idf.py build` 已通过、真机已经成功烧录、BLE 音频已经实际播放成功。
 
-GitHub Actions 构建结果和真机结果需要分别记录后，才能标记“编译通过”和“硬件验证通过”。
-
-本地验证命令仍然是：
+本地验证：
 
 ```bash
 cd omiGlass/esp32
@@ -376,25 +397,22 @@ idf.py -p <PORT> flash monitor
 
 ---
 
-## 下一步：Phase 5
+## 下一步：Phase 6 Camera
 
-Phase 5 迁移 BLE Audio TX：
-
-- Audio TX ring buffer
-- packet index
-- sub-index
-- 3-byte packet header
-- Audio Data notify
-- BLE congestion / pacing
-- 音频优先级
-
-手机端包格式保持：
+Phase 6 只迁 Camera 本身，不发送照片：
 
 ```text
-byte 0-1：packet index，小端
-byte 2：sub-index
-byte 3...：Opus payload
+esp32-camera component
+GPIO mapping
+VGA JPEG
+JPEG quality 25
+XCLK 6MHz
+PSRAM framebuffer
+frame capture / release
+180° orientation metadata
 ```
+
+Camera 能稳定取到 JPEG framebuffer 后，再在 Phase 7 接 Photo BLE Transport。
 
 ---
 
@@ -402,13 +420,14 @@ byte 3...：Opus payload
 
 除非后续显式修改并记录：
 
-- ESP-IDF 固定 v6.1.x
-- XIAO ESP32S3 Sense
-- BLE Device Name：`OMI Glass`
-- Omi BLE UUID 不变
-- Codec ID：21
-- 16kHz Mono
-- Opus 320 samples / 20ms
-- Camera：VGA JPEG
-- 手机端 BLE 包格式不变
-- Arduino `omiGlass/firmware/` 保持不动
+- ESP-IDF 固定 v6.1.x。
+- XIAO ESP32S3 Sense。
+- BLE Device Name：`OMI Glass`。
+- Omi BLE UUID 不变。
+- Codec ID：21。
+- 16kHz Mono。
+- Opus 320 samples / 20ms。
+- Audio packet 3-byte header 不变。
+- Camera 基线：VGA JPEG。
+- 手机端 BLE 协议不变。
+- Arduino `omiGlass/firmware/` 保持不动。
