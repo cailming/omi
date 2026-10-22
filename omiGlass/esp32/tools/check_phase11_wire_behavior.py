@@ -27,6 +27,27 @@ CHECKS = {
         "const uint8_t value[2] = {status, progress};",
     "OTA HTTP User-Agent 保持旧端兼容":
         'http_config.user_agent = "ESP32-OTA/1.0";',
+
+    # OTA Command payload：严格锁定原手机协议。
+    "OTA SET_WIFI SSID 长度字节":
+        "const size_t ssid_len = data[1];",
+    "OTA SET_WIFI 密码长度位置":
+        "const size_t pass_len_index = 2 + ssid_len;",
+    "OTA SET_WIFI 密码长度字节":
+        "const size_t password_len = data[pass_len_index];",
+    "OTA SET_WIFI SSID payload 偏移":
+        "std::memcpy(ssid.data(), &data[2], ssid_len);",
+    "OTA SET_WIFI password payload 偏移":
+        "std::memcpy(password.data(), &data[3 + ssid_len], password_len);",
+    "OTA SET_URL 两字节大端长度":
+        "const size_t url_len = (static_cast<size_t>(data[1]) << 8U) | data[2];",
+    "OTA SET_URL payload 偏移":
+        "std::memcpy(url.data(), &data[3], url_len);",
+    "OTA 只接受 HTTPS":
+        "if (!is_https_url(url.data()))",
+    "OTA GET_STATUS 重发当前状态":
+        "publish_status(s_status.load(), s_progress.load());",
+
     # Audio：packet index little-endian + sub-index 0。
     "Audio packet index 低字节":
         "packet[0] = static_cast<uint8_t>(s_packet_index & 0xFF);",
@@ -34,6 +55,7 @@ CHECKS = {
         "packet[1] = static_cast<uint8_t>((s_packet_index >> 8) & 0xFF);",
     "Audio packet sub-index":
         "packet[2] = OMI_AUDIO_SUB_INDEX;",
+
     # Photo：首包 orientation、little-endian chunk index、FF FF 结束标记。
     "Photo 首包 orientation":
         "packet[2] = s_frame.orientation;",
@@ -43,6 +65,7 @@ CHECKS = {
         "packet[1] = static_cast<uint8_t>((s_chunk_index >> 8) & 0xFF);",
     "Photo FF FF 结束标记":
         "const uint8_t end_marker[2] = {0xFF, 0xFF};",
+
     # Config 中这些大小直接属于手机端协议契约。
     "Audio header size=3":
         "OMI_AUDIO_PACKET_HEADER_SIZE = 3",
@@ -59,7 +82,10 @@ CHECKS = {
 # 这些片段来自 Arduino 的真实发送代码，而不是 config.h。
 # 如果原参考实现以后变化，必须重新审计 Native 行为，不能静默沿用旧结论。
 ARDUINO_BASELINE_CHECKS = {
+    "Arduino Audio index 低字节": "audio_packet_buffer[0] = audioPacketIndex & 0xFF;",
+    "Arduino Audio index 高字节": "audio_packet_buffer[1] = (audioPacketIndex >> 8) & 0xFF;",
     "Arduino Audio sub-index=0": "audio_packet_buffer[2] = 0",
+    "Arduino Photo 首包 orientation": "s_compressed_frame_2[2] = (uint8_t) current_photo_orientation;",
     "Arduino Photo 首包最多 199 JPEG":
         "bytes_to_copy = (remaining > 199) ? 199 : remaining;",
     "Arduino Photo 后续最多 200 JPEG":
