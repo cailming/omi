@@ -37,6 +37,7 @@ struct OtaTaskContext {
 
 std::atomic_bool s_busy{false};
 std::atomic_bool s_cancel_requested{false};
+std::atomic_bool s_wifi_connect_phase{false};
 std::atomic<uint8_t> s_status{OMI_OTA_STATUS_IDLE};
 std::atomic<uint8_t> s_progress{0};
 
@@ -91,11 +92,23 @@ void wifi_event_handler(void *, esp_event_base_t event_base, int32_t event_id, v
     }
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupSetBits(s_wifi_event_group, WIFI_FAILED_BIT);
+        // Arduino WiFi.begin() 的旧实现会在整个 15 秒窗口内等待连接成功，
+        // 不会因为第一次认证/关联失败就立即退出。Native 版本只在“连接阶段”
+        // 自动重试，进入 HTTPS OTA 后若链路断开则交给 HTTP/TLS 错误路径处理。
+        if (s_wifi_connect_phase.load() && !s_cancel_requested.load()) {
+            const esp_err_t reconnect_err = esp_wifi_connect();
+            if (reconnect_err != ESP_OK) {
+                ESP_LOGE(TAG, "Wi-Fi 连接阶段重试失败: %s", esp_err_to_name(reconnect_err));
+                xEventGroupSetBits(s_wifi_event_group, WIFI_FAILED_BIT);
+            } else {
+                ESP_LOGD(TAG, "Wi-Fi 尚未连通，继续在超时窗口内重试");
+            }
+        }
         return;
     }
 
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        s_wifi_connect_phase.store(false);
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -171,6 +184,10 @@ esp_err_t ensure_wifi_driver_initialized()
 
 void stop_wifi()
 {
+    // 先退出连接阶段，避免主动 disconnect/stop 触发的 STA_DISCONNECTED
+    // 被事件回调误判成“需要继续重连”。
+    s_wifi_connect_phase.store(false);
+
     if (!s_wifi_driver_initialized) {
         return;
     }
@@ -231,8 +248,12 @@ esp_err_t connect_wifi(const OtaTaskContext &context)
 
     ESP_LOGI(TAG, "连接 OTA Wi-Fi，SSID=%s", context.ssid.data());
 
+    // 从 esp_wifi_start() 到 GOT_IP / cancel / timeout 都属于连接阶段。
+    // 期间 STA_DISCONNECTED 事件会继续发起连接，以对齐旧 WiFi.begin() 的等待语义。
+    s_wifi_connect_phase.store(true);
     err = esp_wifi_start();
     if (err != ESP_OK) {
+        s_wifi_connect_phase.store(false);
         return err;
     }
     s_wifi_started = true;
@@ -242,6 +263,7 @@ esp_err_t connect_wifi(const OtaTaskContext &context)
 
     while (true) {
         if (s_cancel_requested.load()) {
+            s_wifi_connect_phase.store(false);
             ESP_LOGW(TAG, "Wi-Fi 连接阶段收到 OTA 取消请求");
             return ESP_ERR_INVALID_STATE;
         }
@@ -254,16 +276,19 @@ esp_err_t connect_wifi(const OtaTaskContext &context)
             WIFI_WAIT_SLICE_TICKS);
 
         if ((bits & WIFI_CONNECTED_BIT) != 0) {
+            s_wifi_connect_phase.store(false);
             publish_status(OMI_OTA_STATUS_WIFI_CONNECTED, 0);
             return ESP_OK;
         }
 
         if ((bits & WIFI_FAILED_BIT) != 0) {
-            ESP_LOGW(TAG, "Wi-Fi STA 连接失败或已断开");
+            s_wifi_connect_phase.store(false);
+            ESP_LOGW(TAG, "Wi-Fi 连接调用失败");
             return ESP_FAIL;
         }
 
         if (xTaskGetTickCount() - start_tick >= timeout_ticks) {
+            s_wifi_connect_phase.store(false);
             ESP_LOGW(TAG, "Wi-Fi 连接超时（%u ms）", OMI_WIFI_CONNECT_TIMEOUT_MS);
             return ESP_ERR_TIMEOUT;
         }
@@ -592,6 +617,7 @@ esp_err_t ota_service_init()
     s_firmware_url.fill('\0');
     s_cancel_requested.store(false);
     s_busy.store(false);
+    s_wifi_connect_phase.store(false);
     s_status.store(OMI_OTA_STATUS_IDLE);
     s_progress.store(0);
     s_service_initialized = true;
