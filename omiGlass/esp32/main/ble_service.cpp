@@ -87,6 +87,7 @@ std::atomic_bool s_photo_subscribed{false};
 std::atomic_bool s_battery_subscribed{false};
 std::atomic_bool s_ota_subscribed{false};
 std::atomic<uint16_t> s_mtu{23};
+std::atomic<uint16_t> s_conn_handle{BLE_HS_CONN_HANDLE_NONE};
 
 uint8_t s_own_addr_type = 0;
 uint8_t s_photo_control_value = 0;
@@ -131,7 +132,7 @@ int handle_characteristic_read(struct ble_gatt_access_ctxt *ctxt, Characteristic
 {
     switch (id) {
     case CharacteristicId::AUDIO_DATA:
-        // Phase 4 只建立结构。实时音频发送在 Phase 5 接入。
+        // Audio Data 的实时数据通过 notify 下发，主动读取不返回缓存音频。
         return 0;
 
     case CharacteristicId::AUDIO_CODEC: {
@@ -196,7 +197,7 @@ int handle_characteristic_write(struct ble_gatt_access_ctxt *ctxt, Characteristi
         }
 
         // Phase 6/7 迁移 Camera 后再执行真实拍照逻辑。
-        ESP_LOGI(TAG, "收到 Photo Control=%d，Phase 4 仅记录不执行拍照", static_cast<int8_t>(s_photo_control_value));
+        ESP_LOGI(TAG, "收到 Photo Control=%d，当前仅记录不执行拍照", static_cast<int8_t>(s_photo_control_value));
         return 0;
     }
 
@@ -213,7 +214,7 @@ int handle_characteristic_write(struct ble_gatt_access_ctxt *ctxt, Characteristi
         }
 
         // Phase 10 再接入真实 Wi-Fi / HTTPS OTA。
-        ESP_LOGI(TAG, "收到 OTA Control 命令 0x%02X，长度=%u；Phase 4 仅记录不执行", buffer[0], copied);
+        ESP_LOGI(TAG, "收到 OTA Control 命令 0x%02X，长度=%u；当前仅记录不执行", buffer[0], copied);
         return 0;
     }
 
@@ -340,22 +341,18 @@ void build_gatt_table()
         BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
         &s_ota_data_handle);
 
-    // 主 Omi Service。
     s_services[0].type = BLE_GATT_SVC_TYPE_PRIMARY;
     s_services[0].uuid = &OMI_SERVICE_UUID.u;
     s_services[0].characteristics = s_main_characteristics;
 
-    // 标准 Battery Service。
     s_services[1].type = BLE_GATT_SVC_TYPE_PRIMARY;
     s_services[1].uuid = &BATTERY_SERVICE_UUID.u;
     s_services[1].characteristics = s_battery_characteristics;
 
-    // 标准 Device Information Service。
     s_services[2].type = BLE_GATT_SVC_TYPE_PRIMARY;
     s_services[2].uuid = &DEVICE_INFO_SERVICE_UUID.u;
     s_services[2].characteristics = s_device_info_characteristics;
 
-    // Omi OTA Service。
     s_services[3].type = BLE_GATT_SVC_TYPE_PRIMARY;
     s_services[3].uuid = &OTA_SERVICE_UUID.u;
     s_services[3].characteristics = s_ota_characteristics;
@@ -367,6 +364,14 @@ void reset_subscription_state()
     s_photo_subscribed.store(false);
     s_battery_subscribed.store(false);
     s_ota_subscribed.store(false);
+}
+
+void reset_connection_state()
+{
+    s_connected.store(false);
+    s_conn_handle.store(BLE_HS_CONN_HANDLE_NONE);
+    s_mtu.store(23);
+    reset_subscription_state();
 }
 
 void update_connection_parameters(uint16_t conn_handle)
@@ -403,21 +408,21 @@ int gap_event_callback(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             s_connected.store(true);
+            s_conn_handle.store(event->connect.conn_handle);
             s_mtu.store(23);
             reset_subscription_state();
             ESP_LOGI(TAG, "BLE 已连接，conn_handle=%u", event->connect.conn_handle);
             update_connection_parameters(event->connect.conn_handle);
         } else {
             ESP_LOGW(TAG, "BLE 连接失败，status=%d，重新广播", event->connect.status);
+            reset_connection_state();
             start_advertising();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE 已断开，reason=%d，重新广播", event->disconnect.reason);
-        s_connected.store(false);
-        s_mtu.store(23);
-        reset_subscription_state();
+        reset_connection_state();
         start_advertising();
         return 0;
 
@@ -511,8 +516,7 @@ void on_stack_reset(int reason)
 {
     ESP_LOGE(TAG, "NimBLE Host reset，reason=%d", reason);
     s_ready.store(false);
-    s_connected.store(false);
-    reset_subscription_state();
+    reset_connection_state();
 }
 
 void on_stack_sync()
@@ -621,6 +625,7 @@ esp_err_t ble_service_init(const char *device_serial)
         return err;
     }
 
+    reset_connection_state();
     build_gatt_table();
 
     // 初始化标准 GAP/GATT 服务，再注册 Omi 自定义服务。
@@ -662,7 +667,7 @@ esp_err_t ble_service_init(const char *device_serial)
     // NimBLE Host 在独立 FreeRTOS Task 中运行，业务主循环无需轮询 BLE 栈。
     nimble_port_freertos_init(nimble_host_task);
 
-    ESP_LOGI(TAG, "Phase 4 BLE Core 已启动，等待 Host sync 后开始广播");
+    ESP_LOGI(TAG, "BLE Core 已启动，等待 Host sync 后开始广播");
     return ESP_OK;
 }
 
@@ -699,4 +704,40 @@ bool ble_service_ota_subscribed()
 uint16_t ble_service_mtu()
 {
     return s_mtu.load();
+}
+
+esp_err_t ble_service_notify_audio(const uint8_t *packet, size_t len)
+{
+    if (packet == nullptr || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_ready.load() || !s_connected.load() || !s_audio_subscribed.load()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint16_t conn_handle = s_conn_handle.load();
+    if (conn_handle == BLE_HS_CONN_HANDLE_NONE || s_audio_data_handle == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint16_t mtu = s_mtu.load();
+    if (mtu <= 3 || len > static_cast<size_t>(mtu - 3)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(packet, len);
+    if (om == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    // ble_gatts_notify_custom() 无论成功或失败都会消费传入的 mbuf，
+    // 因此调用之后绝不能再次手工 os_mbuf_free_chain()。
+    const int rc = ble_gatts_notify_custom(conn_handle, s_audio_data_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "发送 Audio Data notify 失败，rc=%d", rc);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
 }
