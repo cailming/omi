@@ -84,6 +84,23 @@ constexpr uint16_t OMI_BLE_CONN_LATENCY = 0;
 constexpr uint16_t OMI_BLE_CONN_TIMEOUT = 800;
 
 // =============================================================================
+// BLE 实时音频发送配置
+// 与原 Arduino 固件保持 2 字节 packet index + 1 字节 sub-index 的包头格式。
+// =============================================================================
+constexpr size_t OMI_AUDIO_PACKET_HEADER_SIZE = 3;
+constexpr size_t OMI_AUDIO_TX_QUEUE_FRAMES = 16;
+constexpr size_t OMI_AUDIO_TX_MAX_PACKETS_PER_PROCESS = 2;
+constexpr uint8_t OMI_AUDIO_SUB_INDEX = 0;
+
+// Audio Data 一次通知的最大业务负载：3 字节包头 + 一帧 Opus。
+constexpr size_t OMI_AUDIO_TX_PACKET_MAX_BYTES =
+    OMI_AUDIO_PACKET_HEADER_SIZE + OMI_OPUS_OUTPUT_MAX_BYTES;
+
+static_assert(
+    OMI_AUDIO_TX_PACKET_MAX_BYTES <= OMI_BLE_MTU_SIZE - 3,
+    "Configured BLE MTU must fit one complete Omi audio notification");
+
+// =============================================================================
 // 后续阶段会继续使用的硬件参数
 // =============================================================================
 constexpr gpio_num_t OMI_BATTERY_ADC_GPIO = GPIO_NUM_2;
