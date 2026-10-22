@@ -7,11 +7,13 @@ on:
     paths:
       - "omiGlass/esp32/**"
       - "omiGlass/firmware/src/config.h"
+      - "omiGlass/firmware/src/app.cpp"
       - ".github/workflows/omiglass-esp-idf.yml"
   pull_request:
     paths:
       - "omiGlass/esp32/**"
       - "omiGlass/firmware/src/config.h"
+      - "omiGlass/firmware/src/app.cpp"
       - ".github/workflows/omiglass-esp-idf.yml"
   workflow_dispatch:
 
