@@ -9,6 +9,7 @@ idf_component_register(
         "camera_service.cpp"
         "photo_service.cpp"
         "battery_service.cpp"
+        "power_service.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -16,6 +17,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_i2s
         esp_adc
+        esp_pm
         heap
         bt
         nvs_flash
