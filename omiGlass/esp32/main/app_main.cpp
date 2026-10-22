@@ -145,10 +145,12 @@ void update_ota_maintenance_mode(bool ota_busy, bool &last_ota_busy)
         const BatteryReading latest_battery = battery_service_latest();
         const bool shutdown_pending =
             s_pending_long_press_shutdown ||
+            power_service_state() == PowerState::POWERING_OFF ||
             (latest_battery.valid && latest_battery.battery_voltage <= OMI_BATTERY_CRITICAL_VOLTAGE);
 
         if (shutdown_pending) {
             // OTA 是因为关机/临界低电被取消时，不先恢复高功耗的数据面；下一步直接进入 Power Service 关机流程。
+            // 同时检查 PowerState，覆盖 OTA Task 恰好在同一主循环两次 busy 读取之间退出的竞态窗口。
             ESP_LOGI(TAG, "OTA 已安全退出且存在待处理关机条件，不恢复 Mic / Audio / Photo");
             s_ota_paused_microphone = false;
         } else {
