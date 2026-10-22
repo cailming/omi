@@ -154,6 +154,11 @@ void audio_tx_service_process()
     }
 }
 
+bool audio_tx_service_has_pending()
+{
+    return s_initialized && s_queue_count > 0;
+}
+
 void audio_tx_service_reset_queue()
 {
     s_read_index = 0;
