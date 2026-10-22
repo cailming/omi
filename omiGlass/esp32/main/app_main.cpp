@@ -142,14 +142,25 @@ void update_ota_maintenance_mode(bool ota_busy, bool &last_ota_busy)
             s_ota_paused_microphone = true;
         }
     } else if (!ota_busy && last_ota_busy) {
-        ESP_LOGI(TAG, "退出 OTA 维护模式：恢复实时业务");
+        const BatteryReading latest_battery = battery_service_latest();
+        const bool shutdown_pending =
+            s_pending_long_press_shutdown ||
+            (latest_battery.valid && latest_battery.battery_voltage <= OMI_BATTERY_CRITICAL_VOLTAGE);
 
-        if (s_ota_paused_microphone) {
-            const esp_err_t err = mic_service_start();
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "OTA 结束后恢复 PDM 麦克风失败: %s", esp_err_to_name(err));
-            }
+        if (shutdown_pending) {
+            // OTA 是因为关机/临界低电被取消时，不先恢复高功耗的数据面；下一步直接进入 Power Service 关机流程。
+            ESP_LOGI(TAG, "OTA 已安全退出且存在待处理关机条件，不恢复 Mic / Audio / Photo");
             s_ota_paused_microphone = false;
+        } else {
+            ESP_LOGI(TAG, "退出 OTA 维护模式：恢复实时业务");
+
+            if (s_ota_paused_microphone) {
+                const esp_err_t err = mic_service_start();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "OTA 结束后恢复 PDM 麦克风失败: %s", esp_err_to_name(err));
+                }
+                s_ota_paused_microphone = false;
+            }
         }
     }
 
