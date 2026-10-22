@@ -78,6 +78,11 @@ void delete_calibration()
     s_calibration_ready = false;
 }
 
+float battery_voltage_from_adc_millivolts(int adc_millivolts)
+{
+    return (static_cast<float>(adc_millivolts) / 1000.0f) * OMI_BATTERY_VOLTAGE_DIVIDER_RATIO;
+}
+
 } // namespace
 
 esp_err_t battery_service_init()
@@ -208,25 +213,33 @@ esp_err_t battery_service_read(BatteryReading *reading)
 
     const int raw_average = static_cast<int>(raw_sum / static_cast<int64_t>(OMI_BATTERY_SAMPLE_COUNT));
 
-    int adc_millivolts = 0;
+    // Phase 11 同一批 raw sample 同时计算两条路径：
+    // 1. Arduino 风格 raw/4095*3300；
+    // 2. ESP-IDF Curve Fitting。
+    // 最终业务仍优先使用校准结果，但日志会同时暴露两者，便于和万用表/旧固件做同板对比。
+    const int raw_approx_millivolts =
+        static_cast<int>((static_cast<int64_t>(raw_average) * 3300) / 4095);
+    const float raw_approx_battery_voltage =
+        battery_voltage_from_adc_millivolts(raw_approx_millivolts);
+
+    int calibrated_millivolts = 0;
+    float calibrated_battery_voltage = 0.0f;
     bool calibrated = false;
 
     if (s_calibration_ready && s_cali_handle != nullptr) {
-        const esp_err_t cali_err = adc_cali_raw_to_voltage(s_cali_handle, raw_average, &adc_millivolts);
+        const esp_err_t cali_err =
+            adc_cali_raw_to_voltage(s_cali_handle, raw_average, &calibrated_millivolts);
         if (cali_err == ESP_OK) {
             calibrated = true;
+            calibrated_battery_voltage =
+                battery_voltage_from_adc_millivolts(calibrated_millivolts);
         } else {
             ESP_LOGW(TAG, "ADC 校准换算失败，本次退回近似换算: %s", esp_err_to_name(cali_err));
         }
     }
 
-    if (!calibrated) {
-        // 仅作为校准不可用时的兼容回退路径，保持原 Arduino 固件的计算思路。
-        adc_millivolts = static_cast<int>((static_cast<int64_t>(raw_average) * 3300) / 4095);
-    }
-
-    float battery_voltage =
-        (static_cast<float>(adc_millivolts) / 1000.0f) * OMI_BATTERY_VOLTAGE_DIVIDER_RATIO;
+    const int adc_millivolts = calibrated ? calibrated_millivolts : raw_approx_millivolts;
+    float battery_voltage = calibrated ? calibrated_battery_voltage : raw_approx_battery_voltage;
     battery_voltage = std::clamp(
         battery_voltage,
         OMI_BATTERY_VOLTAGE_CLAMP_MIN,
@@ -236,6 +249,10 @@ esp_err_t battery_service_read(BatteryReading *reading)
     result.raw_average = raw_average;
     result.adc_millivolts = adc_millivolts;
     result.battery_voltage = battery_voltage;
+    result.raw_approx_millivolts = raw_approx_millivolts;
+    result.raw_approx_battery_voltage = raw_approx_battery_voltage;
+    result.calibrated_millivolts = calibrated_millivolts;
+    result.calibrated_battery_voltage = calibrated_battery_voltage;
     result.percentage = calculate_percentage(battery_voltage);
     result.calibrated = calibrated;
     result.valid = true;
@@ -243,14 +260,27 @@ esp_err_t battery_service_read(BatteryReading *reading)
     s_latest = result;
     *reading = result;
 
-    ESP_LOGI(
-        TAG,
-        "Battery：raw=%d adc=%dmV voltage=%.3fV percentage=%u%% calibrated=%s",
-        result.raw_average,
-        result.adc_millivolts,
-        static_cast<double>(result.battery_voltage),
-        result.percentage,
-        result.calibrated ? "是" : "否");
+    if (calibrated) {
+        ESP_LOGI(
+            TAG,
+            "Battery：raw=%d rawApprox=%dmV/%.3fV calibrated=%dmV/%.3fV selected=%.3fV percentage=%u%%",
+            result.raw_average,
+            result.raw_approx_millivolts,
+            static_cast<double>(result.raw_approx_battery_voltage),
+            result.calibrated_millivolts,
+            static_cast<double>(result.calibrated_battery_voltage),
+            static_cast<double>(result.battery_voltage),
+            result.percentage);
+    } else {
+        ESP_LOGI(
+            TAG,
+            "Battery：raw=%d rawApprox=%dmV/%.3fV calibrated=不可用 selected=%.3fV percentage=%u%%",
+            result.raw_average,
+            result.raw_approx_millivolts,
+            static_cast<double>(result.raw_approx_battery_voltage),
+            static_cast<double>(result.battery_voltage),
+            result.percentage);
+    }
 
     return ESP_OK;
 }
