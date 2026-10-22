@@ -5,6 +5,7 @@
 #include "mic_service.h"
 #include "omiglass_config.h"
 #include "opus_service.h"
+#include "photo_service.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -65,7 +66,7 @@ void on_opus_encoded(const uint8_t *data, size_t len)
     audio_tx_service_enqueue(data, len);
 }
 
-void report_audio_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
+void report_runtime_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
 {
     if (now_ms - last_report_ms < 1000) {
         return;
@@ -107,6 +108,27 @@ void report_audio_status_if_needed(uint64_t now_ms, uint64_t &last_report_ms)
             static_cast<unsigned long>(tx_stats.dropped_mtu_too_small),
             static_cast<unsigned long>(tx_stats.notify_errors),
             static_cast<unsigned>(tx_stats.queue_depth));
+    }
+
+    const PhotoServiceStats photo_stats = photo_service_take_stats();
+    if (photo_stats.captures_started > 0 || photo_stats.captures_completed > 0 || photo_stats.capture_errors > 0 ||
+        photo_stats.uploads_cancelled > 0 || photo_stats.chunks_sent > 0 || photo_stats.notify_errors > 0 ||
+        photo_stats.uploading) {
+        ESP_LOGI(
+            TAG,
+            "BLE Photo：订阅=%s 开始=%lu 完成=%lu 抓图错误=%lu 取消=%lu chunk=%lu JPEG字节=%lu 音频让路=%lu MTU等待=%lu notify错误=%lu 上传中=%s 剩余=%u",
+            ble_service_photo_subscribed() ? "是" : "否",
+            static_cast<unsigned long>(photo_stats.captures_started),
+            static_cast<unsigned long>(photo_stats.captures_completed),
+            static_cast<unsigned long>(photo_stats.capture_errors),
+            static_cast<unsigned long>(photo_stats.uploads_cancelled),
+            static_cast<unsigned long>(photo_stats.chunks_sent),
+            static_cast<unsigned long>(photo_stats.jpeg_bytes_sent),
+            static_cast<unsigned long>(photo_stats.yielded_to_audio),
+            static_cast<unsigned long>(photo_stats.mtu_waits),
+            static_cast<unsigned long>(photo_stats.notify_errors),
+            photo_stats.uploading ? "是" : "否",
+            static_cast<unsigned>(photo_stats.remaining_bytes));
     }
 
     s_mic_samples_since_report = 0;
@@ -156,12 +178,20 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "BLE Audio TX 初始化失败: %s", esp_err_to_name(tx_err));
     }
 
-    // Phase 6：初始化 Camera。本阶段只获取 JPEG framebuffer，不发送照片 BLE。
+    // Phase 6：初始化 Camera。Phase 7 会在其上层持有 framebuffer 并分包发送。
     const esp_err_t camera_err = camera_service_init();
     if (camera_err == ESP_OK) {
-        ESP_LOGI(TAG, "Phase 6 Camera 已启动；当前只做 JPEG capture/release 验证");
+        ESP_LOGI(TAG, "Phase 6 Camera 已启动");
     } else {
         ESP_LOGE(TAG, "Camera 初始化失败: %s", esp_err_to_name(camera_err));
+    }
+
+    // Phase 7：初始化 Photo Control / Capture / BLE 分包上传状态机。
+    const esp_err_t photo_err = photo_service_init();
+    if (photo_err == ESP_OK) {
+        ESP_LOGI(TAG, "Phase 7 Photo BLE 已启动，等待 Photo Data Notify 订阅");
+    } else {
+        ESP_LOGE(TAG, "Photo BLE 初始化失败: %s", esp_err_to_name(photo_err));
     }
 
     // 先初始化 Opus，再启动麦克风。这样第一批 PCM 到达时就可以直接进入编码环形缓冲区。
@@ -184,10 +214,7 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "PDM 麦克风启动失败: %s", esp_err_to_name(mic_err));
     }
 
-    uint64_t last_audio_report_ms = board_millis();
-
-    // 原 Arduino 固件默认 lastCaptureTime = now - 30s，因此连接后第一轮即可拍一张。
-    uint64_t last_camera_capture_ms = board_millis() - OMI_CAMERA_CAPTURE_INTERVAL_MS;
+    uint64_t last_runtime_report_ms = board_millis();
 
     while (true) {
         // BLE Host 自己运行在 NimBLE FreeRTOS Task 中，主循环只同步连接状态给 LED。
@@ -204,33 +231,12 @@ extern "C" void app_main(void)
             opus_service_process();
         }
 
-        // 音频发送始终放在 Camera 之前，保持原项目“Audio 优先于 Photo”的调度原则。
+        // 音频发送必须始终先于图片发送执行。
+        // Photo 服务还会再次查询 Audio Queue；只要仍有音频排队，本轮图片发送就会主动让路。
         audio_tx_service_process();
 
         const uint64_t now_ms = board_millis();
-
-        // Phase 6 暂时保持原固件“连接后默认每 30 秒拍照”的行为，
-        // 但拍到的 JPEG 只做日志验证并立即归还，不进入 Photo Data BLE。
-        if (camera_service_is_ready() && ble_service_is_connected() &&
-            now_ms - last_camera_capture_ms >= OMI_CAMERA_CAPTURE_INTERVAL_MS) {
-            CameraFrameView frame{};
-            const esp_err_t capture_err = camera_service_capture(&frame);
-            if (capture_err == ESP_OK) {
-                ESP_LOGI(
-                    TAG,
-                    "Phase 6 Camera 验证：JPEG=%u bytes，%ux%u，方向=%u",
-                    static_cast<unsigned>(frame.len),
-                    static_cast<unsigned>(frame.width),
-                    static_cast<unsigned>(frame.height),
-                    static_cast<unsigned>(frame.orientation));
-                camera_service_release_frame();
-            } else {
-                ESP_LOGW(TAG, "Camera capture 失败: %s", esp_err_to_name(capture_err));
-            }
-
-            // 无论本次成功与否都等待下一个周期，避免硬件异常时每 1ms 重试刷屏。
-            last_camera_capture_ms = now_ms;
-        }
+        photo_service_process(now_ms);
 
         const BoardButtonEvent event = board_service_take_button_event();
         if (event == BoardButtonEvent::SHORT_PRESS) {
@@ -241,7 +247,7 @@ extern "C" void app_main(void)
             ESP_LOGI(TAG, "收到长按事件，等待后续电源管理模块处理");
         }
 
-        report_audio_status_if_needed(now_ms, last_audio_report_ms);
+        report_runtime_status_if_needed(now_ms, last_runtime_report_ms);
 
         // I2S 读取本身会等待一帧；这里再短暂让出 CPU，避免异常情况下空转。
         board_delay_ms(1);
